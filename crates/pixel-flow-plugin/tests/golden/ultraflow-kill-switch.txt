@@ -1,0 +1,4 @@
+exit: 1
+--- stdout
+--- stderr
+pixel: classify is disabled; enable it with `pixel config classify on` or `pixel config setup`

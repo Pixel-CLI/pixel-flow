@@ -1,0 +1,27 @@
+exit: 0
+--- stdout
+{
+  "name": "a-flow",
+  "title": "A flow",
+  "description": "d",
+  "tags": [
+    "x",
+    "y"
+  ],
+  "steps": [
+    {
+      "action": "snapshot",
+      "max_retries": 1
+    },
+    {
+      "action": "open",
+      "url": "https://example.com/{{env_name}}",
+      "max_retries": 1
+    }
+  ],
+  "created_unix": OID,
+  "revised_unix": OID,
+  "revision": 1,
+  "proven": false
+}
+--- stderr

@@ -1,0 +1,4 @@
+exit: 1
+--- stdout
+--- stderr
+pixel: --var expects a name before '=', got '=Zurich'

@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: The Pixel contributors
+# SPDX-License-Identifier: MIT
+#
+# A `vX.Y.Z` tag on main publishes one `pixel-flow-<target-triple>` executable
+# per platform, each with a `<name>.sha256` file (`<hex>  <name>`). That is
+# what `pixel install github:Pixel-CLI/pixel-flow` downloads.
+
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  create:
+    name: create the release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: the tag names the version every file carries
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          workspace=$(sed -n -E 's/^version = "([^"]*)".*/\1/p' Cargo.toml | head -n 1)
+          manifest=$(sed -n -E 's/^version = "([^"]*)".*/\1/p' pixel-plugin.toml | head -n 1)
+          [ "$version" = "$workspace" ] || { echo "tag $version, Cargo.toml $workspace" >&2; exit 1; }
+          [ "$version" = "$manifest" ] || { echo "tag $version, pixel-plugin.toml $manifest" >&2; exit 1; }
+      - name: the tag is on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "$GITHUB_REF_NAME is not on main" >&2; exit 1; }
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: create
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p pixel-flow-plugin
+      - name: name, hash and upload the executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset="pixel-flow-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/pixel-flow" "$asset"
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum "$asset" > "$asset.sha256"; else shasum -a 256 "$asset" > "$asset.sha256"; fi
+          "./$asset" --version
+          gh release upload "$GITHUB_REF_NAME" "$asset" "$asset.sha256"

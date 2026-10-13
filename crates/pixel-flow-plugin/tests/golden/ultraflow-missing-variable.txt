@@ -1,0 +1,8 @@
+exit: 1
+--- stdout
+# Replaying flow: gated (Sign in) revision 1
+# Steps: 1
+
+# 0 steps executed, 0 skipped, 0 conditions decided, 0 deviations
+--- stderr
+pixel: missing required variable 'account' for flow 'gated'

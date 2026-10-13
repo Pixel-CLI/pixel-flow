@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+{"name":"a-flow","path":"EXTRA/flows/a-flow.json","revised":true,"revision":2,"steps":2}
+--- stderr

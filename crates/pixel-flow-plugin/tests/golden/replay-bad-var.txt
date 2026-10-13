@@ -1,0 +1,4 @@
+exit: 1
+--- stdout
+--- stderr
+pixel: --var expects key=value, got 'bad'

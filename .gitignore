@@ -1,0 +1,5 @@
+/target
+# Core's commands write their action log into the repository they run in.
+.pixel/
+*.bak
+.DS_Store

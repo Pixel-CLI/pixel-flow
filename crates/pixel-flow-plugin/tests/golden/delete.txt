@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+{"deleted":true,"name":"a-flow"}
+--- stderr

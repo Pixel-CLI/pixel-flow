@@ -1,0 +1,5 @@
+exit: 1
+--- stdout
+{"ok":false,"op":"flow","protocol":1,"result":null,"error":{"code":"INVALID_INPUT","message":"cannot read steps file /nonexistent/steps.json: No such file or directory (os error 2)"}}
+--- stderr
+pixel: cannot read steps file /nonexistent/steps.json: No such file or directory (os error 2)

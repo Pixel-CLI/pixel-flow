@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: The Pixel contributors
+# SPDX-License-Identifier: MIT
+
+[workspace]
+resolver = "3"
+members = ["crates/pixel-flow-plugin"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Pixel-CLI/pixel-flow"
+rust-version = "1.91"
+publish = false
+
+# The ONE place the Pixel core commit is pinned. Every crate reaches core
+# library crates through these entries; to move the pin, change `rev` on all
+# of them together (they must name the same commit, so the crates agree on one
+# version of each core type) and run `cargo update`. CI fails if two entries
+# disagree (scripts/check-pin.sh).
+[workspace.dependencies]
+pixel-daemon = { git = "https://github.com/Pixel-CLI/pixel", rev = "ad788194ddada1b8a23563327ce67f0220cf3fed" }
+pixel-flow = { git = "https://github.com/Pixel-CLI/pixel", rev = "ad788194ddada1b8a23563327ce67f0220cf3fed" }
+pixel-proto = { git = "https://github.com/Pixel-CLI/pixel", rev = "ad788194ddada1b8a23563327ce67f0220cf3fed" }
+pixel-ultraflow = { git = "https://github.com/Pixel-CLI/pixel", rev = "ad788194ddada1b8a23563327ce67f0220cf3fed" }
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+
+# Lint policy for every workspace member (each crate opts in with
+# `[lints] workspace = true`). CI runs clippy with `-D warnings`, so every
+# `warn` below is a hard gate there; this table exists so a local
+# `cargo clippy` agrees with CI and so the decisions are made once, here.
+#
+# Lints are named one by one rather than through `pedantic`/`nursery` groups:
+# CI floats on stable, and a group would turn a toolchain release into a red
+# CI whenever it adds a lint. Group entries carry `priority = -1` so a named
+# lint can override its group.
+[workspace.lints.rust]
+# Every `unsafe` block is a claim about invariants; the claim goes next to it.
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+# --- Safety ------------------------------------------------------------
+undocumented_unsafe_blocks = "warn" # `// SAFETY:` comment on every unsafe block
+ptr_as_ptr = "warn"                 # `.cast()` keeps pointer casts checked
+# --- Leftovers that never ship ----------------------------------------------
+dbg_macro = "warn"
+todo = "warn"
+# --- Pedantic lints adopted (each was clean or fixed when enabled) --------
+checked_conversions = "warn"                # `T::try_from(x).is_ok()` over manual range checks
+large_stack_arrays = "warn"                 # a 16 KiB array on the stack is a heap buffer
+manual_assert = "warn"                      # `assert!(cond, ..)` over `if !cond { panic!(..) }`
+manual_assert_eq = "warn"
+match_wildcard_for_single_variants = "warn" # a wildcard that hides one variant hides future ones
+stable_sort_primitive = "warn"              # `sort_unstable` for primitives: same result, faster
+unreadable_literal = "warn"                 # `1_000_000`, not `1000000`
+doc_link_with_quotes = "warn"
+items_after_statements = "warn"             # items exist for the whole scope: declare them first
+map_unwrap_or = "warn"                      # `map_or`/`map_or_else`/`is_some_and` over `map().unwrap_or()`
+redundant_closure_for_method_calls = "warn" # `map(str::trim)`, not `map(|s| s.trim())`
+uninlined_format_args = "warn"              # `format!("{name}")`, not `format!("{}", name)`
+# Evaluated and not enabled (site counts on 2026-09, lib+tests): the
+# documentation trio (missing_errors_doc 496, must_use_candidate 450,
+# doc_markdown 367), the numeric-cast family (cast_possible_truncation 199,
+# cast_precision_loss 142, cast_possible_wrap 96, cast_sign_loss 74: sizes,
+# counts and metric ratios cast on purpose), and the remaining style
+# rewrites (format_push_string 277, since moved by clippy to the
+# `restriction` group; needless_pass_by_value 98, signature changes across
+# crates; too_many_lines 82). Each would be a hundred-site churn PR with no
+# behaviour change; add one here when every crate has been brought to zero.
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

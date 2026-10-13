@@ -1,0 +1,14 @@
+exit: 0
+--- stdout
+# Flow: a-flow (A flow)
+# d
+# Steps: 2 | Revision: 1 | Proven: no
+
+# Step 1
+agent-browser --session comet snapshot -i
+
+# Step 2
+agent-browser --session comet open "https://example.com/prod"
+
+
+--- stderr

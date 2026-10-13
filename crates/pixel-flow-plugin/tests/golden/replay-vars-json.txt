@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+{"dry_run":false,"name":"a-flow","output":"# Flow: a-flow (A flow)\n# d\n# Steps: 2 | Revision: 1 | Proven: no\n\n# Step 1\nagent-browser --session comet snapshot -i\n\n# Step 2\nagent-browser --session comet open \"https://example.com/prod\"\n\n"}
+--- stderr

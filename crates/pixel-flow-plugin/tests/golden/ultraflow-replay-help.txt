@@ -1,0 +1,60 @@
+exit: 0
+--- stdout
+Follow a saved flow, deciding its `conditional` steps with `pixel classify`
+
+Usage: pixel ultraflow replay [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          Flow name, as `pixel flow list` prints it
+
+Options:
+      --var <KEY=VALUE>
+          A value for the flow's `value_var`: `--var key=value`. Repeatable
+
+      --no-repair
+          Do not re-decide a step whose page no longer matches
+
+      --max-repairs <MAX_REPAIRS>
+          Most steps one replay may re-decide
+          
+          [default: 5]
+
+      --update
+          Record each re-decided step into the flow as a `conditional` branch, so the next replay chooses instead of thinking again
+
+      --engine <ENGINE>
+          Decision engine: `remote` (an OpenAI-compatible chat completion) or `ollaya` (the local decision daemon). Without it the stored preference decides, exactly as `pixel classify` resolves one
+
+          Possible values:
+          - remote: The OpenAI-compatible remote adapter (default)
+          - ollaya: A local Ollaya server's native typed-choice readout
+
+      --remote-preset <REMOTE_PRESET>
+          Remote provider preset (overrides the stored choice; defaults to the stored one, then `openrouter`). Selects the base URL and the API-key environment variable — see `pixel classify --help`
+
+          Possible values:
+          - openrouter
+          - ollama
+          - local
+          - deepseek
+          - opencode-go
+          - openai
+          - jev
+          - clef-ollama:     Cloudflare's Clef-flash decision model served by Ollama (`/v1/systemone`): a local server needs no key, a remote Ollama host takes `OLLAMA_API_KEY`. Served by [`decide_clef`]
+          - clef-cloudflare: Cloudflare's Clef-flash decision model on Workers AI behind a Cloudflare API token plus account id. Served by [`decide_clef`]
+
+      --remote-model <REMOTE_MODEL>
+          Remote model id (overrides the preset default)
+
+      --ollaya-url <OLLAYA_URL>
+          Base URL of the local Ollaya server (with the local engine)
+          
+          [default: http://127.0.0.1:11435]
+
+      --json
+          
+
+  -h, --help
+          Print help (see a summary with '-h')
+--- stderr

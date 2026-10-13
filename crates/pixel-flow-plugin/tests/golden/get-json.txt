@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+{"created_unix":OID,"description":"d","name":"a-flow","proven":false,"revised_unix":OID,"revision":1,"steps":[{"action":"snapshot","max_retries":1},{"action":"open","max_retries":1,"url":"https://example.com/{{env_name}}"}],"tags":["x","y"],"title":"A flow"}
+--- stderr

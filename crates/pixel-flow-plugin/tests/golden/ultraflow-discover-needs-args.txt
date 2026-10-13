@@ -1,0 +1,8 @@
+exit: 2
+--- stdout
+--- stderr
+error: the following required arguments were not provided:
+  --url <URL>
+  --goal <GOAL>
+Usage: pixel ultraflow discover --url <URL> --goal <GOAL>
+For more information, try '--help'.

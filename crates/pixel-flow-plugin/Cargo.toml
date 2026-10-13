@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: The Pixel contributors
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "pixel-flow-plugin"
+description = "Pixel plugin: flow and ultraflow, saved agent-browser flows and the classify-driven browser loop, behind one pixel-flow binary."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "pixel_flow_plugin"
+path = "src/lib.rs"
+
+# The only binary. `pixel-flow` alone runs `flow`; `pixel-flow ultraflow ...`
+# and the same binary invoked as `pixel-ultraflow` (a link made by
+# `pixel-flow install-links`) run `ultraflow`.
+[[bin]]
+name = "pixel-flow"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+# Core's library crates share names with this plugin's package and binary;
+# `pixel_flow` below is core's store and executor, `pixel_flow_plugin` is us.
+pixel-flow = { workspace = true }
+pixel-proto = { workspace = true }
+pixel-ultraflow = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true, optional = true }
+
+[features]
+# Scratch directories and the comparison with the core build used by the tests.
+testing = ["dep:tempfile"]
+
+[dev-dependencies]
+pixel-daemon = { workspace = true }
+pixel-flow-plugin = { path = ".", features = ["testing"] }
+tempfile = { workspace = true }

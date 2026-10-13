@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+[{"name":"a-flow","proven":false,"revised_unix":OID,"revision":1,"tags":["x","y"],"title":"A flow"}]
+--- stderr

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: The Pixel contributors
+# SPDX-License-Identifier: MIT
+
+name = "flow"
+version = "0.1.0"
+api = 1
+description = "Save, run and replay proven agent-browser flows (flow), and the classify-driven browser loop that discovers them (ultraflow)."
+run = "bin/pixel-flow"
+capabilities = ["command"]
+# The plugin opens no connection itself, but both commands exist to drive a
+# browser (agent-browser) onto websites, and ultraflow asks the core binary's
+# `pixel classify` for every decision, which calls a remote model unless the
+# local engine is chosen.
+network = true
+
+# Not read by plugin API 1 (the host ignores keys it does not know): the
+# commands this plugin answers to. API 1 resolves `pixel <name>` to a plugin
+# *named* <name>, so `pixel flow` finds this plugin by its name and
+# `pixel ultraflow` only through the `pixel-ultraflow` link of
+# `pixel-flow install-links`; a host that reads this list would route every
+# name below to `pixel-flow <name>` by itself.
+# tests/manifest.rs keeps the list equal to the commands the binary has.
+commands = [
+  "flow",
+  "ultraflow",
+]

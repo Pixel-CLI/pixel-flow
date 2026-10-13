@@ -1,0 +1,77 @@
+exit: 0
+--- stdout
+Drive a page toward a goal with `pixel classify`, one operation per cycle, and compose what worked into a flow document.
+
+`--save <name>` writes it into the flow store, where `pixel flow list|show` finds it. `--repeat 2` runs the goal twice and composes a `conditional` where the two runs took different paths, so a replay chooses by condition instead of following one frozen route.
+
+Usage: pixel ultraflow discover [OPTIONS] --url <URL> --goal <GOAL>
+
+Options:
+      --url <URL>
+          The page to start from
+
+      --goal <GOAL>
+          What to accomplish, in one sentence. Becomes the flow's goal: every page decision and every value question is framed by it
+
+      --var <KEY=VALUE>
+          A value a field may take: `--var key=value`. Repeatable. A typed field is filled from a declared variable or from a string the goal itself contains — never from an invented value
+
+      --save <SAVE>
+          Save the composed flow under this name. Without it the run only reports what it did
+
+      --title <TITLE>
+          Flow title (defaults to the goal)
+
+      --tag <TAGS>
+          Tag for the saved flow; repeatable (`--tag auth --tag web`)
+
+      --max-steps <MAX_STEPS>
+          Most actions one run may take
+          
+          [default: 40]
+
+      --max-stalled <MAX_STALLED>
+          Consecutive actions that leave the page unchanged before the run stops as blocked
+          
+          [default: 3]
+
+      --repeat <REPEAT>
+          Run the goal this many times and compose the traces together
+          
+          [default: 1]
+
+      --engine <ENGINE>
+          Decision engine: `remote` (an OpenAI-compatible chat completion) or `ollaya` (the local decision daemon). Without it the stored preference decides, exactly as `pixel classify` resolves one
+
+          Possible values:
+          - remote: The OpenAI-compatible remote adapter (default)
+          - ollaya: A local Ollaya server's native typed-choice readout
+
+      --remote-preset <REMOTE_PRESET>
+          Remote provider preset (overrides the stored choice; defaults to the stored one, then `openrouter`). Selects the base URL and the API-key environment variable — see `pixel classify --help`
+
+          Possible values:
+          - openrouter
+          - ollama
+          - local
+          - deepseek
+          - opencode-go
+          - openai
+          - jev
+          - clef-ollama:     Cloudflare's Clef-flash decision model served by Ollama (`/v1/systemone`): a local server needs no key, a remote Ollama host takes `OLLAMA_API_KEY`. Served by [`decide_clef`]
+          - clef-cloudflare: Cloudflare's Clef-flash decision model on Workers AI behind a Cloudflare API token plus account id. Served by [`decide_clef`]
+
+      --remote-model <REMOTE_MODEL>
+          Remote model id (overrides the preset default)
+
+      --ollaya-url <OLLAYA_URL>
+          Base URL of the local Ollaya server (with the local engine)
+          
+          [default: http://127.0.0.1:11435]
+
+      --json
+          
+
+  -h, --help
+          Print help (see a summary with '-h')
+--- stderr
