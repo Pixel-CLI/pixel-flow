@@ -719,11 +719,11 @@ dependencies = [
 [[package]]
 name = "pixel-flow"
 version = "0.7.1"
-source = "git+https://github.com/Pixel-CLI/pixel?rev=ad788194ddada1b8a23563327ce67f0220cf3fed#ad788194ddada1b8a23563327ce67f0220cf3fed"
 dependencies = [
  "mutants",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -875,7 +875,6 @@ dependencies = [
 [[package]]
 name = "pixel-ultraflow"
 version = "0.7.1"
-source = "git+https://github.com/Pixel-CLI/pixel?rev=ad788194ddada1b8a23563327ce67f0220cf3fed#ad788194ddada1b8a23563327ce67f0220cf3fed"
 dependencies = [
  "mutants",
  "pixel-flow",
