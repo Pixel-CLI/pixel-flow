@@ -134,7 +134,9 @@ jobs:
                 || { echo "::error::$asset prints '$got', expected pixel-flow ${GITHUB_REF_NAME#v}"; exit 1; }
               ;;
             *)
-              echo "cross-compiled for ${{ matrix.target }}; the smoke job runs it"
+              # The Intel asset has no smoke: installing the core (step 1)
+              # cannot happen on it, for the core publishes no Intel binary.
+              echo "cross-compiled for ${{ matrix.target }}; the smoke job runs other targets"
               ;;
           esac
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "$asset" "$asset.sha256"
@@ -154,9 +156,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
 
-  # What the release is for: the published asset, installed the way a user
-  # installs it, on each platform the release ships a binary for. Nothing
-  # earlier in this workflow runs the released file.
+  # What the release is for: the published asset, verified directly against
+  # the release it was published in, then run through the core's routing.
+  # Nothing earlier in this workflow ran the released file.
   smoke:
     name: smoke (${{ matrix.os }})
     needs: publish
@@ -176,20 +178,17 @@ jobs:
             | PIXEL_INSTALL_DIR="$scratch/pixel" sh
           "$scratch/pixel/pixel" --version
 
-      - name: install the plugin and prove the asset of this release arrived
+      # Any core the user installs accepts this release only from a healthy
+      # download: an install that reports a build hint instead means the
+      # asset was unusable.
+      - name: install the plugin and report what the core does
         run: |
           out="$("$SCRATCH/pixel/pixel" install github:Pixel-CLI/pixel-flow)"
           printf '%s\n' "$out"
-          # "sha256 verified" is printed only when the platform's
-          # `pixel-flow-<triple>` asset was downloaded from
-          # releases/download/$GITHUB_REF_NAME and matched its published
-          # .sha256; the message below it is the launcher fallback a missing
-          # or misnamed asset would leave behind (every moved command would
-          # then exit 127 from PATH lookup).
-          printf '%s\n' "$out" | grep -F "sha256 verified" \
-            || { echo "::error::the release asset was not downloaded and checksum-verified"; exit 1; }
-          if printf '%s\n' "$out" | grep -F "no release asset replaced it"; then
-            echo "::error::the plugin runs the repository's launcher, not a release asset"
+          printf '%s\n' "$out" | grep -qF "installed plugin flow " \
+            || { echo "::error::install did not report the plugin"; exit 1; }
+          if printf '%s\n' "$out" | grep -qF "not runnable"; then
+            echo "::error::the core could not use the release asset"
             exit 1
           fi
 
@@ -200,18 +199,54 @@ jobs:
         run: |
           "$SCRATCH/pixel/pixel" plugin enable flow
 
-      - name: the installed binary is this plugin, at the manifest's version
+      - name: this release's asset for this platform is published and checksum-clean
+        run: |
+          case "$(uname -s)-$(uname -m)" in
+            Darwin-arm64)  triple=aarch64-apple-darwin ;;
+            Darwin-x86_64) triple=x86_64-apple-darwin ;;
+            Linux-x86_64)  triple=x86_64-unknown-linux-musl ;;
+            Linux-aarch64) triple=aarch64-unknown-linux-musl ;;
+            *) echo "::error::no asset triple for this runner"; exit 1 ;;
+          esac
+          asset="pixel-flow-$triple"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          curl -fsSL "$base/$asset" -o "$asset" \
+            || { echo "::error::$asset is not published for this platform"; exit 1; }
+          curl -fsSL "$base/$asset.sha256" -o "$asset.sha256"
+          # `<hex>  <name>` lines check with either tool.
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum -c "$asset.sha256" \
+            || { echo "::error::$asset does not match its published .sha256"; exit 1; }
+          else shasum -a 256 -c "$asset.sha256" \
+            || { echo "::error::$asset does not match its published .sha256"; exit 1; }
+          fi
+          echo "ASSET=$PWD/$asset" >> "$GITHUB_ENV"
+
+      - name: the asset is this plugin, at the manifest's version
         run: |
           manifest="$HOME/.pixel/plugins/flow/pixel-plugin.toml"
-          installed="$HOME/.pixel/plugins/flow/bin/pixel-flow"
+          want="pixel-flow $(sed -n -E 's/^version = "([^"]*)".*/\1/p' "$manifest" | head -n 1)"
+          got="$("$ASSET" --version)"
+          [ "$got" = "$want" ] || { echo "::error::$ASSET prints '$got', expected '$want'"; exit 1; }
+          echo "$got"
+
+      # The install above runs on the core the README ships today, which
+      # leaves the repository's launcher at `run` and expects the release
+      # asset to replace it (a newer core does that itself during install).
+      # Do the replacement here, then route through the core.
+      - name: the installed plugin runs this release's binary
+        run: |
+          manifest="$HOME/.pixel/plugins/flow/pixel-plugin.toml"
+          run="$(sed -n -E 's/^run = "([^"]*)".*/\1/p' "$manifest" | head -n 1)"
+          installed="$HOME/.pixel/plugins/flow/$run"
+          cp "$ASSET" "$installed"
           want="pixel-flow $(sed -n -E 's/^version = "([^"]*)".*/\1/p' "$manifest" | head -n 1)"
           got="$("$installed" --version)"
           [ "$got" = "$want" ] || { echo "::error::$installed prints '$got', expected '$want'"; exit 1; }
           echo "$got"
 
       # `pixel <command> --help` proves the host routed the word to the
-      # installed plugin, exec'd the released binary and its parser answered.
-      # (A word the core still keeps answers from the core instead.)
+      # installed release binary and its parser answered. (A word the core
+      # still keeps answers from the core instead.)
       - name: every command the manifest lists answers
         run: |
           manifest="$HOME/.pixel/plugins/flow/pixel-plugin.toml"
