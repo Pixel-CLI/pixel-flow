@@ -13,7 +13,9 @@
 # install never lands on a release whose asset for its platform is still
 # missing. The draft is published only once every asset is uploaded, and the
 # smoke job then installs the published release the way a user does and runs
-# every command the manifest lists.
+# every command the manifest lists. The Intel macOS asset is run by its build
+# job but not by the smoke job: the core publishes no Intel macOS binary to
+# install it through.
 
 name: Release
 
@@ -53,15 +55,17 @@ jobs:
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "$GITHUB_REF_NAME is not on main" >&2; exit 1; }
+      # --repo everywhere: `gh` infers the repository from the checkout, and
+      # the publish job below has none.
       - name: create the draft (a re-run reuses it)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "$GITHUB_REF_NAME already exists; this run uploads to it"
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
-              --title "$GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --draft --title "$GITHUB_REF_NAME" --generate-notes
           fi
 
   build:
@@ -74,11 +78,15 @@ jobs:
       # One broken target must not hide the state of the others.
       fail-fast: false
       matrix:
+        # features: the flags this target's build needs beyond the defaults.
+        # A backend with no build for a target — fastembed (ONNX) on musl and
+        # Intel macOS — is replaced by the pure-Rust model2vec backend, so the
+        # released binary keeps a working semantic channel on every platform.
         include:
-          - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: macos-15-intel, target: x86_64-apple-darwin }
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
-          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl }
+          - { os: macos-latest, target: aarch64-apple-darwin, features: "" }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, features: "" }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, features: "" }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl, features: "" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -102,10 +110,10 @@ jobs:
           tool: cross@0.2.5
       - name: build (Linux musl through cross)
         if: runner.os == 'Linux'
-        run: cross build --release --locked --target ${{ matrix.target }} -p pixel-flow-plugin
+        run: cross build --release --locked ${{ matrix.features }} --target ${{ matrix.target }} -p pixel-flow-plugin
       - name: build (macOS native)
         if: runner.os == 'macOS'
-        run: cargo build --release --locked --target ${{ matrix.target }} -p pixel-flow-plugin
+        run: cargo build --release --locked ${{ matrix.features }} --target ${{ matrix.target }} -p pixel-flow-plugin
       - name: name, hash and upload the executable
         env:
           GH_TOKEN: ${{ github.token }}
@@ -115,8 +123,7 @@ jobs:
           if command -v sha256sum >/dev/null 2>&1; then sha256sum "$asset" > "$asset.sha256"; else shasum -a 256 "$asset" > "$asset.sha256"; fi
           # The binary must carry the tag's version. Only a target built for
           # this runner's architecture can run here (the aarch64 musl lane is
-          # cross-compiled on an x86_64 runner); the smoke job runs every
-          # asset on the runner it belongs to.
+          # cross-compiled on an x86_64 runner); the smoke job runs it there.
           host_arch="$(uname -m)"
           if [ "$host_arch" = "arm64" ]; then host_arch=aarch64; fi
           case "${{ matrix.target }}" in
@@ -130,7 +137,7 @@ jobs:
               echo "cross-compiled for ${{ matrix.target }}; the smoke job runs it"
               ;;
           esac
-          gh release upload "$GITHUB_REF_NAME" --clobber "$asset" "$asset.sha256"
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "$asset" "$asset.sha256"
 
   publish:
     name: publish the release
@@ -141,10 +148,11 @@ jobs:
     steps:
       # Every target uploaded: only now does `releases/latest/download`
       # answer with this tag, so an install cannot see a half-built release.
+      # No checkout here, so the repository is named explicitly.
       - name: flip the draft to published
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
 
   # What the release is for: the published asset, installed the way a user
   # installs it, on each platform the release ships a binary for. Nothing
