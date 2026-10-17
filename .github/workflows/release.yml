@@ -220,6 +220,7 @@ jobs:
             || { echo "::error::$asset does not match its published .sha256"; exit 1; }
           fi
           echo "ASSET=$PWD/$asset" >> "$GITHUB_ENV"
+          chmod +x "$asset"
 
       - name: the asset is this plugin, at the manifest's version
         run: |
