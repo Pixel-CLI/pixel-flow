@@ -1,9 +1,19 @@
 # SPDX-FileCopyrightText: The Pixel contributors
 # SPDX-License-Identifier: MIT
 #
-# A `vX.Y.Z` tag on main publishes one `pixel-flow-<target-triple>` executable
-# per platform, each with a `<name>.sha256` file (`<hex>  <name>`). That is
-# what `pixel install github:Pixel-CLI/pixel-flow` downloads.
+# A `vX.Y.Z` tag on main publishes one `pixel-flow-<target-triple>`
+# executable per platform, each with a `.sha256` file (`<hex>  <name>`). That
+# is what `pixel install github:Pixel-CLI/pixel-flow` downloads: the core asks
+# for `pixel-<manifest name>-<target>` (`pixel-plugin/src/fetch.rs` of
+# Pixel-CLI/pixel), and on Linux that target is `*-unknown-linux-musl`, so
+# the Linux lanes build musl through cross rather than the runner's glibc.
+#
+# The four targets build into a DRAFT release: `releases/latest` keeps
+# pointing at the previous release while this one is incomplete, so an
+# install never lands on a release whose asset for its platform is still
+# missing. The draft is published only once every asset is uploaded, and the
+# smoke job then installs the published release the way a user does and runs
+# every command the manifest lists.
 
 name: Release
 
@@ -11,8 +21,9 @@ on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
+# Every job reads only; the three that publish ask for the write they need.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,10 +32,15 @@ env:
 
 jobs:
   create:
-    name: create the release
+    name: create the draft release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The job never pushes: do not leave the token in .git/config.
+          persist-credentials: false
       - name: the tag names the version every file carries
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -37,28 +53,59 @@ jobs:
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "$GITHUB_REF_NAME is not on main" >&2; exit 1; }
-      - env:
+      - name: create the draft (a re-run reuses it)
+        env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "$GITHUB_REF_NAME already exists; this run uploads to it"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi
 
   build:
     name: build (${{ matrix.target }})
     needs: create
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
+      # One broken target must not hide the state of the others.
       fail-fast: false
       matrix:
         include:
           - { os: macos-latest, target: aarch64-apple-darwin }
           - { os: macos-15-intel, target: x86_64-apple-darwin }
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
-      - run: cargo build --release --locked --target ${{ matrix.target }} -p pixel-flow-plugin
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      # A prebuilt binary instead of `cargo install cross`: cross compiles
+      # inside its own Docker image (the musl toolchain included), so the
+      # runner needs no host packages and the C dependencies
+      # (libsqlite3-sys, tree-sitter) link against musl. The same version the
+      # core repository's release builds use.
+      - name: Install cross (Linux musl)
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cross@0.2.5
+      - name: build (Linux musl through cross)
+        if: runner.os == 'Linux'
+        run: cross build --release --locked --target ${{ matrix.target }} -p pixel-flow-plugin
+      - name: build (macOS native)
+        if: runner.os == 'macOS'
+        run: cargo build --release --locked --target ${{ matrix.target }} -p pixel-flow-plugin
       - name: name, hash and upload the executable
         env:
           GH_TOKEN: ${{ github.token }}
@@ -66,5 +113,105 @@ jobs:
           asset="pixel-flow-${{ matrix.target }}"
           cp "target/${{ matrix.target }}/release/pixel-flow" "$asset"
           if command -v sha256sum >/dev/null 2>&1; then sha256sum "$asset" > "$asset.sha256"; else shasum -a 256 "$asset" > "$asset.sha256"; fi
-          "./$asset" --version
-          gh release upload "$GITHUB_REF_NAME" "$asset" "$asset.sha256"
+          # The binary must carry the tag's version. Only a target built for
+          # this runner's architecture can run here (the aarch64 musl lane is
+          # cross-compiled on an x86_64 runner); the smoke job runs every
+          # asset on the runner it belongs to.
+          host_arch="$(uname -m)"
+          if [ "$host_arch" = "arm64" ]; then host_arch=aarch64; fi
+          case "${{ matrix.target }}" in
+            "${host_arch}-"*)
+              got="$("./$asset" --version)"
+              echo "$got"
+              [ "$got" = "pixel-flow ${GITHUB_REF_NAME#v}" ] \
+                || { echo "::error::$asset prints '$got', expected pixel-flow ${GITHUB_REF_NAME#v}"; exit 1; }
+              ;;
+            *)
+              echo "cross-compiled for ${{ matrix.target }}; the smoke job runs it"
+              ;;
+          esac
+          gh release upload "$GITHUB_REF_NAME" --clobber "$asset" "$asset.sha256"
+
+  publish:
+    name: publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Every target uploaded: only now does `releases/latest/download`
+      # answer with this tag, so an install cannot see a half-built release.
+      - name: flip the draft to published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+  # What the release is for: the published asset, installed the way a user
+  # installs it, on each platform the release ships a binary for. Nothing
+  # earlier in this workflow runs the released file.
+  smoke:
+    name: smoke (${{ matrix.os }})
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - name: install pixel the way the README does
+        run: |
+          scratch="$(mktemp -d)"
+          echo "SCRATCH=$scratch" >> "$GITHUB_ENV"
+          echo "HOME=$scratch/home" >> "$GITHUB_ENV"
+          mkdir -p "$scratch/home" "$scratch/pixel"
+          curl -fsSL "https://github.com/Pixel-CLI/pixel/releases/latest/download/install.sh" \
+            | PIXEL_INSTALL_DIR="$scratch/pixel" sh
+          "$scratch/pixel/pixel" --version
+
+      - name: install the plugin and prove the asset of this release arrived
+        run: |
+          out="$("$SCRATCH/pixel/pixel" install github:Pixel-CLI/pixel-flow)"
+          printf '%s\n' "$out"
+          # "sha256 verified" is printed only when the platform's
+          # `pixel-flow-<triple>` asset was downloaded from
+          # releases/download/$GITHUB_REF_NAME and matched its published
+          # .sha256; the message below it is the launcher fallback a missing
+          # or misnamed asset would leave behind (every moved command would
+          # then exit 127 from PATH lookup).
+          printf '%s\n' "$out" | grep -F "sha256 verified" \
+            || { echo "::error::the release asset was not downloaded and checksum-verified"; exit 1; }
+          if printf '%s\n' "$out" | grep -F "no release asset replaced it"; then
+            echo "::error::the plugin runs the repository's launcher, not a release asset"
+            exit 1
+          fi
+
+      # Every plugin declares `network = true` except telemetry, and the core
+      # refuses a network plugin until the user opts in; for a plugin that
+      # declares none this says so and succeeds.
+      - name: allow the plugin
+        run: |
+          "$SCRATCH/pixel/pixel" plugin enable flow
+
+      - name: the installed binary is this plugin, at the manifest's version
+        run: |
+          manifest="$HOME/.pixel/plugins/flow/pixel-plugin.toml"
+          installed="$HOME/.pixel/plugins/flow/bin/pixel-flow"
+          want="pixel-flow $(sed -n -E 's/^version = "([^"]*)".*/\1/p' "$manifest" | head -n 1)"
+          got="$("$installed" --version)"
+          [ "$got" = "$want" ] || { echo "::error::$installed prints '$got', expected '$want'"; exit 1; }
+          echo "$got"
+
+      # `pixel <command> --help` proves the host routed the word to the
+      # installed plugin, exec'd the released binary and its parser answered.
+      # (A word the core still keeps answers from the core instead.)
+      - name: every command the manifest lists answers
+        run: |
+          manifest="$HOME/.pixel/plugins/flow/pixel-plugin.toml"
+          # The manifest spells `commands` one per line inside `[ … ]`.
+          commands=$(awk '/^commands = \[/ {inside = 1; next} inside && /^\]/ {inside = 0} inside {gsub(/[",]/, ""); print}' "$manifest")
+          [ -n "$commands" ] || { echo "::error::$manifest lists no commands"; exit 1; }
+          for command in $commands; do
+            printf -- '--- pixel %s --help\n' "$command"
+            "$SCRATCH/pixel/pixel" "$command" --help > /dev/null
+          done
+          echo "all commands answered"
