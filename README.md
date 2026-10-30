@@ -39,6 +39,28 @@ Both commands drive `agent-browser` (on `PATH`, session `comet`), and
 `ultraflow` also needs the core `pixel` binary: it asks `pixel classify` for
 every decision and honours its kill switch (`pixel config classify on`).
 
+## Browser configuration
+
+Both commands drive `agent-browser` in one named session. Configure it with
+environment variables; unset, the defaults are the session `comet` and no
+connect step.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `PIXEL_FLOW_SESSION` | `comet` | the agent-browser session every step runs in |
+| `PIXEL_FLOW_CONNECT_URL` | unset | connect that session once per run: a CDP port, or a `wss://` URL such as a browserless endpoint |
+
+Example, running the session against a browserless endpoint:
+
+```bash
+export PIXEL_FLOW_SESSION=comet
+export PIXEL_FLOW_CONNECT_URL="wss://<your-browserless-host>/chromium?token=<token>"
+pixel flow run <name>
+```
+
+A failed connect fails the run with the agent-browser error. Keep the token
+out of shell history and committed files.
+
 ## How `pixel <command>` finds this plugin
 
 Plugin API 1 resolves `pixel flow` to a plugin *named* `flow`, or to an
