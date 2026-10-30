@@ -567,10 +567,47 @@ fn exec_step(
     }
 }
 
+/// The agent-browser session every step runs in. `PIXEL_FLOW_SESSION` overrides the
+/// default `comet`, so a different browser session (or a browserless one) can be used.
+fn session_name() -> String {
+    std::env::var("PIXEL_FLOW_SESSION")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "comet".to_string())
+}
+
+/// Connect the session once per process when `PIXEL_FLOW_CONNECT_URL` is set (a CDP
+/// port or a `wss://` URL, e.g. a browserless endpoint). Without it the session is
+/// used as-is, which is how `comet` already works.
+fn ensure_connected(session: &str) -> Result<(), String> {
+    static CONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let url = match std::env::var("PIXEL_FLOW_CONNECT_URL") {
+        Ok(url) if !url.trim().is_empty() => url,
+        _ => return Ok(()),
+    };
+    if CONNECTED.load(std::sync::atomic::Ordering::Acquire) {
+        return Ok(());
+    }
+    let out = Command::new("agent-browser")
+        .args(["--session", session, "connect", &url])
+        .output()
+        .map_err(|e| format!("failed to spawn agent-browser: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "agent-browser connect failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    CONNECTED.store(true, std::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
 /// Run an agent-browser command and return its stdout.
 fn run_agent_browser(args: &[&str]) -> Result<String, String> {
+    let session = session_name();
+    ensure_connected(&session)?;
     let mut cmd = Command::new("agent-browser");
-    cmd.args(["--session", "comet"]);
+    cmd.args(["--session", &session]);
     cmd.args(args);
     let output = cmd
         .output()
