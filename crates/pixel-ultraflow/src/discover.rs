@@ -34,6 +34,10 @@ pub const DEFAULT_MAX_STALLED: usize = 3;
 const WAIT_STEP: &str = "500ms";
 /// Pixels a `SCROLL` step moves.
 const SCROLL_STEP: &str = "800";
+/// The rule a question adds when it offers `PRESS`.
+const PRESS_RULE: &str = "Choose PRESS when a control is waiting for a key combination (a hotkey \
+     recorder a click just armed): it sends the combination the goal names. Do not PRESS before \
+     the control that receives it is armed.";
 /// How many recent actions the state text carries.
 const HISTORY_SHOWN: usize = 8;
 
@@ -232,7 +236,8 @@ pub fn one_cycle(
     satisfied_note: Option<&str>,
 ) -> Result<Cycle, String> {
     let budget = decider.option_budget();
-    let space = ActionSpace::of(&page.elements, budget);
+    let press = value::press_available(goal, vars);
+    let space = ActionSpace::offering(&page.elements, budget, press);
     // A page the pair space fits is answered in one question — the cheap
     // path. One that does not fit is never truncated silently: the same
     // cycle runs through the two-stage space (operation, then target),
@@ -241,7 +246,10 @@ pub fn one_cycle(
         Some(note) => format!("{}\nNOTE: {note}", state_text(page, history)),
         None => state_text(page, history),
     };
-    let context = context_of(goal);
+    let context = match press {
+        true => format!("{} {PRESS_RULE}", context_of(goal)),
+        false => context_of(goal),
+    };
     let mut decisions = 0usize;
     let (choice, record) = if space.truncated().is_empty() {
         let question = Decision {
@@ -269,7 +277,7 @@ pub fn one_cycle(
         (choice, record)
     } else {
         let (answer, spent) =
-            twostage::choose_two_stage(decider, text, context, &page.elements, budget)?;
+            twostage::choose_two_stage(decider, text, context, &page.elements, budget, press)?;
         decisions += spent;
         let element = answer
             .slot
@@ -315,8 +323,26 @@ pub fn one_cycle(
         });
     }
 
-    // A typed field needs a value before its step exists at all.
+    // A typed field needs a value before its step exists at all, and a
+    // key press its chord.
     let mut given: Option<value::Resolved> = None;
+    if choice.action.op == Op::Press {
+        decisions += 1;
+        match value::choose_chord(decider, goal, vars, budget)? {
+            ValueChoice::Value(resolved) => given = Some(resolved),
+            ValueChoice::Undetermined { detail } => {
+                return Ok(Cycle {
+                    decision: record,
+                    step: None,
+                    value: None,
+                    terminal: None,
+                    undetermined: Some(detail),
+                    decisions,
+                    satisfied: None,
+                });
+            }
+        }
+    }
     if matches!(choice.action.op, Op::Type | Op::Select) {
         let Some(element) = choice.element.as_ref() else {
             return Err(format!(
@@ -606,6 +632,16 @@ pub fn step_for(
             rationale,
             ..Default::default()
         },
+        // The chord is both the step's `key` and its `value`, so two runs
+        // that pressed different chords never compose as one step.
+        Op::Press => FlowStep {
+            action: "press".to_string(),
+            key: Some(value?.to_string()),
+            value: value.map(ToString::to_string),
+            value_var,
+            rationale,
+            ..Default::default()
+        },
         Op::Wait => FlowStep {
             action: "wait".to_string(),
             wait: Some(WAIT_STEP.to_string()),
@@ -662,7 +698,11 @@ pub fn state_text(page: &Observation, steps: &[TracedStep]) -> String {
                 "{}. {} — {}{}\n",
                 index + 1,
                 step.decision.label,
-                step.step.ref_hint.as_deref().unwrap_or("-"),
+                step.step
+                    .ref_hint
+                    .as_deref()
+                    .or(step.step.key.as_deref())
+                    .unwrap_or("-"),
                 outcome
             ));
         }
@@ -1521,6 +1561,94 @@ mod tests {
         assert!(
             !text.contains("1. CLICK 1 "),
             "the oldest actions are dropped: {text}"
+        );
+    }
+
+    /// A recorder a click armed, then the goal's chord: discovery records a
+    /// `press` step carrying the chord, compose keeps it, and a replay sends
+    /// it again — the same key, in agent-browser's spelling.
+    #[test]
+    fn a_pressed_chord_is_recorded_composed_and_replayed() {
+        const RECORDER: &str = "- text \"Add Hotkey (row: Type /resume)\" [clickable, ref=o3]";
+        const ARMED: &str = "- text \"Record Hotkey (row: Type /resume)\" [clickable, ref=o3]";
+        const BOUND: &str =
+            "- button \"Type /resume Edit Hotkey for Type /resume Hyper r\" [ref=e4]";
+        let goal = "Set the hotkey of 'Type /resume' to Hyper+R";
+        let request = DiscoverRequest {
+            goal,
+            url: "app://Raycast",
+            vars: &[],
+            limits: Limits::default(),
+        };
+        let mut browser = ScriptedBrowser::default();
+        browser.start();
+        browser.observe("app://Raycast", RECORDER);
+        browser.click(RECORDER);
+        browser.observe("app://Raycast", ARMED);
+        browser.ok(""); // the press
+        browser.observe("app://Raycast", BOUND);
+        let mut decider = ScriptedDecider::new(vec![
+            Ok(distribution(&[("CLICK 1", 1.0)])),
+            Ok(distribution(&[("PRESS", 1.0)])),
+            Ok(distribution(&[("KEY Hyper+R", 1.0)])),
+            Ok(distribution(&[("DONE", 1.0)])),
+        ]);
+        let trace = discover(&mut browser, &mut decider, &request).unwrap();
+        assert_eq!(trace.status, Status::Done, "{}", trace.detail);
+        // PRESS is offered, framed by its rule, because the goal names a chord.
+        assert!(decider.labels_of(0).contains(&"PRESS".to_string()));
+        assert!(decider.asked(0).context.contains("Choose PRESS"));
+        assert_eq!(decider.labels_of(2), ["KEY Hyper+R", "NONE"]);
+        let press = &trace.steps[1].step;
+        assert_eq!(press.action, "press");
+        assert_eq!(press.key.as_deref(), Some("Hyper+R"));
+        assert!(
+            browser
+                .calls()
+                .contains(&vec!["press", "Control+Alt+Shift+Meta+r"]),
+            "{:?}",
+            browser.calls()
+        );
+
+        let composed = crate::compose::compose(
+            &[trace],
+            &crate::compose::FlowMeta {
+                name: "hotkey".to_string(),
+                title: "hotkey".to_string(),
+                tags: vec![],
+            },
+        )
+        .unwrap();
+        let actions: Vec<&str> = composed
+            .flow
+            .steps
+            .iter()
+            .map(|s| s.action.as_str())
+            .collect();
+        assert_eq!(actions, ["open", "click", "press"]);
+        assert_eq!(composed.flow.steps[2].key.as_deref(), Some("Hyper+R"));
+        assert_eq!(composed.flow.url.as_deref(), Some("app://Raycast"));
+
+        let mut browser = ScriptedBrowser::default();
+        browser.start();
+        browser.click(RECORDER);
+        let report = crate::replay::replay(
+            &mut browser,
+            &mut ScriptedDecider::always("true"),
+            &crate::replay::ReplayRequest {
+                flow: &composed.flow,
+                vars: &HashMap::new(),
+                repair: false,
+                max_repairs: 0,
+            },
+        );
+        assert!(
+            browser
+                .calls()
+                .contains(&vec!["press", "Control+Alt+Shift+Meta+r"]),
+            "{:?} {}",
+            browser.calls(),
+            report.log
         );
     }
 }

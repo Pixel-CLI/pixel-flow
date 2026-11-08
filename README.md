@@ -61,6 +61,56 @@ pixel flow run <name>
 A failed connect fails the run with the agent-browser error. Keep the token
 out of shell history and committed files.
 
+## Desktop apps
+
+A flow can drive a native macOS app instead of a page, through
+[agent-desktop](https://agent-browser.dev/desktop) on `PATH`. The start
+target picks the backend:
+
+| `--url` | Backend |
+| --- | --- |
+| `http://…`, `https://…`, any other scheme (`file://`, `about:blank`) | agent-browser, as before |
+| `app://<App>` (`app://Calculator`) | agent-desktop on that app |
+| a running app's exact name, any case (`raycast`) | agent-desktop on that app, without a question |
+| a page without a scheme (`example.com`, `localhost:3000`) | agent-browser, as before |
+| any other name (`the Raycast settings`) | one `pixel classify` question over `browser` and the running apps (those the name mentions first); an app answer becomes `app://<App>`, a browser answer asks for a URL |
+
+Without agent-desktop (Linux, or not installed) every target goes to
+agent-browser as given, as it did before desktops.
+
+```bash
+pixel ultraflow discover --url app://Calculator --goal "Compute 2+3 in Calculator" --save calc
+pixel ultraflow replay calc      # and `pixel flow run calc --execute`
+```
+
+The saved flow records the resolved `app://…` start, so `replay` and
+`flow run` never ask again. Snapshots are `agent-desktop snapshot --app <App>
+--compact`, rendered as agent-browser snapshot text (static text such as a
+result display is page context, never a target); `click`, `fill`, `type`,
+`select`, `press` and `scroll` map to agent-desktop's headless commands.
+`eval`, `connect` and tab commands are refused.
+
+Controls drawn outside the accessibility tree (a WebKit settings page's
+hotkey recorder) are reached through OCR: each desktop snapshot takes one
+[cua-driver](https://github.com/trycua/cua) window screenshot, reads it with
+macOS Vision (a small Swift helper, built with `swiftc` on first use and
+cached in `~/Library/Caches/pixel-flow`), and lists every line the tree does
+not already name as a clickable `text` target (`Add Hotkey (row: Type
+/resume)`: identical labels are told apart by their row). Clicking one is a
+cua-driver foreground pixel click. Without cua-driver or `swiftc` the
+snapshot says `# ocr unavailable` and the tree alone is used.
+
+`PRESS` sends a key chord (`Hyper+R`, `cmd+k`, `return`). It is offered only
+when the goal spells a chord out or a `--var` holds one, and the chord is
+chosen among those, never invented. A combination with `+` counts anywhere in
+the goal; a bare key that is also a word (`enter`, `return`, `escape`) counts
+only quoted (`'Enter'`) or right after `press`, `hit` or `tap`, so "Enter
+London" or "a return flight" never offers `PRESS`. On the desktop a chord after an OCR
+click goes to that point through cua-driver (foreground); otherwise
+agent-desktop's headless `press`, falling back to cua-driver when
+agent-desktop finds no focused element. In the browser it is
+`agent-browser press` with Playwright key names.
+
 ## How `pixel <command>` finds this plugin
 
 Plugin API 1 resolves `pixel flow` to a plugin *named* `flow`, or to an
@@ -105,6 +155,8 @@ binary `ultraflow` asks for decisions, and defaults to `pixel` on `PATH`.
   question asks core once which provider answers (a two-label ping) because
   the provider sets how many options a question may offer; `--engine remote`
   and `--engine ollaya` skip that call.
+- **`ultraflow discover --url` also takes `app://<App>` and a bare app
+  name** (see [Desktop apps](#desktop-apps)); its `--help` text says so.
 - **No `flow` alias.** The built-in `pixel flow` is gone from core; the plugin
   answers to `flow` and `ultraflow` only.
 
