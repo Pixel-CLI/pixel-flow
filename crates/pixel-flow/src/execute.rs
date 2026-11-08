@@ -82,6 +82,11 @@ pub trait Browser {
     fn run(&mut self, args: &[&str]) -> Result<String, String>;
     /// Give the page time to load or navigate.
     fn pause(&mut self, duration: Duration);
+    /// The program a step's log line names: `agent-browser`, or the
+    /// backend standing in for it.
+    fn tool(&self) -> &'static str {
+        "agent-browser"
+    }
 }
 
 struct AgentBrowser;
@@ -348,7 +353,7 @@ fn exec_step(
         "open" => {
             if let Some(ref url) = step.url {
                 let url = substitute(url, vars);
-                log.push_str(&format!("{indent}agent-browser open \"{url}\"\n"));
+                log.push_str(&format!("{indent}{} open \"{url}\"\n", browser.tool()));
                 // The page the URL is opened from, so the poll below can
                 // tell the navigation it is waiting for from a no-op.
                 let before = browser.run(&["get", "url"]).ok();
@@ -370,7 +375,7 @@ fn exec_step(
             Ok(true)
         }
         "snapshot" => {
-            log.push_str(&format!("{indent}agent-browser snapshot -i\n"));
+            log.push_str(&format!("{indent}{} snapshot -i\n", browser.tool()));
             browser
                 .run(&["snapshot", "-i"])
                 .map_err(|e| format!("snapshot failed: {e}"))?;
@@ -387,7 +392,7 @@ fn exec_step(
             // The page the click is issued from, so the poll below can
             // tell the navigation it is waiting for from a no-op.
             let before = browser.run(&["get", "url"]).ok();
-            log.push_str(&format!("{indent}agent-browser click @{ref_id}\n"));
+            log.push_str(&format!("{indent}{} click @{ref_id}\n", browser.tool()));
             browser
                 .run(&["click", &format!("@{ref_id}")])
                 .map_err(|e| format!("click @{ref_id} failed: {e}"))?;
@@ -470,8 +475,12 @@ fn exec_step(
                 return Ok(true);
             }
             log.push_str(&format!(
-                "{}agent-browser {} @{} \"{}\"\n",
-                indent, step.action, ref_id, value
+                "{}{} {} @{} \"{}\"\n",
+                indent,
+                browser.tool(),
+                step.action,
+                ref_id,
+                value
             ));
             browser
                 .run(&[&step.action, &format!("@{ref_id}"), &value])
@@ -487,7 +496,8 @@ fn exec_step(
             let ref_id = find_ref_in_snapshot(&snapshot, &target)
                 .ok_or_else(|| format!("no element matching '{target}' found in snapshot"))?;
             log.push_str(&format!(
-                "{indent}agent-browser select @{ref_id} \"{value}\"\n"
+                "{indent}{} select @{ref_id} \"{value}\"\n",
+                browser.tool()
             ));
             browser
                 .run(&["select", &format!("@{ref_id}"), &value])
@@ -502,7 +512,7 @@ fn exec_step(
                 None => substitute(step.key.as_deref().unwrap_or("Enter"), vars),
             };
             let key = crate::chord::for_browser(&key);
-            log.push_str(&format!("{indent}agent-browser press {key}\n"));
+            log.push_str(&format!("{indent}{} press {key}\n", browser.tool()));
             browser
                 .run(&["press", &key])
                 .map_err(|e| format!("press {key} failed: {e}"))?;
@@ -520,7 +530,8 @@ fn exec_step(
             let (direction, pixels) = parse_scroll(&spec);
             let pixels = pixels.to_string();
             log.push_str(&format!(
-                "{indent}agent-browser scroll {direction} {pixels}\n"
+                "{indent}{} scroll {direction} {pixels}\n",
+                browser.tool()
             ));
             browser
                 .run(&["scroll", direction, &pixels])
@@ -577,7 +588,7 @@ fn exec_step(
             // Evaluate JS — for cases where regular click doesn't work.
             let js = substitute(step.value.as_deref().unwrap_or(""), vars);
             if !js.is_empty() {
-                log.push_str(&format!("{indent}agent-browser eval \"{js}\"\n"));
+                log.push_str(&format!("{indent}{} eval \"{js}\"\n", browser.tool()));
                 browser
                     .run(&["eval", &js])
                     .map_err(|e| format!("eval failed: {e}"))?;
@@ -750,22 +761,13 @@ fn extract_ref_if_matches(
     search_terms: &[&str],
     fallback_term: &str,
 ) -> Option<String> {
-    // `eN` is an element; `oN` a desktop OCR text target (`desktop.rs`).
-    let ref_start = line.find("ref=e").or_else(|| line.find("ref=o"))?;
-    let prefix = &line[ref_start + 4..ref_start + 5];
-    let after_e = &line[ref_start + 4..]; // skip "ref=", now at "eN...]"
-    let digits_start = 1; // skip the "e"
-    let rest = &after_e[digits_start..];
-    let ref_end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    let ref_id = &rest[..ref_end];
+    let (start, end) = ref_span(line)?;
+    let reference = &line[start + "ref=".len()..end];
 
     // The ref itself is not the element's text: `'2'` must not match the
-    // `ref=e12` of a button named `5`.
-    let line_lower = line
-        .replacen(&format!("ref={prefix}{ref_id}"), "", 1)
-        .to_lowercase();
+    // `ref=e12` of a button named `5`. Cut by position, so a name that
+    // spells the same `ref=…` keeps its text.
+    let line_lower = format!("{}{}", &line[..start], &line[end..]).to_lowercase();
     let matched = if !search_terms.is_empty() {
         search_terms
             .iter()
@@ -776,11 +778,33 @@ fn extract_ref_if_matches(
         true
     };
 
-    if matched {
-        Some(format!("{prefix}{ref_id}"))
-    } else {
-        None
+    matched.then(|| reference.to_string())
+}
+
+/// The byte range of a line's `ref=eN` (an element) or `ref=oN` (a desktop
+/// OCR text target, `desktop.rs`): the first one after the quoted name, so a
+/// name or an OCR line that spells `ref=e…` is not read as the ref. `None`
+/// when the line has neither, or only a `ref=tN` page text.
+fn ref_span(line: &str) -> Option<(usize, usize)> {
+    let after_name = line
+        .find('"')
+        .and_then(|open| line[open + 1..].find('"').map(|close| open + 1 + close + 1))
+        .unwrap_or(0);
+    let mut from = after_name;
+    while let Some(found) = line[from..].find("ref=") {
+        let start = from + found;
+        let id = &line[start + "ref=".len()..];
+        if id.starts_with(['e', 'o']) {
+            let digits = id[1..]
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(id.len() - 1);
+            if digits > 0 {
+                return Some((start, start + "ref=".len() + 1 + digits));
+            }
+        }
+        from = start + "ref=".len();
     }
+    None
 }
 
 /// Extract the character number from a ref_hint like "Code character 3 of 9".
@@ -1084,6 +1108,38 @@ mod tests {
                         - text \"Add Hotkey (row: Type /resume)\" [clickable, ref=o12]";
         let hint = "text containing 'Add Hotkey (row: Type /resume)'";
         assert_eq!(find_ref_in_snapshot(snapshot, hint).as_deref(), Some("o12"));
+        // A name that spells a ref is text: the ref is the one after it.
+        let snapshot = "- text \"see ref=e7 above\" [clickable, ref=o3]";
+        let hint = "text containing 'ref=e7'";
+        assert_eq!(find_ref_in_snapshot(snapshot, hint).as_deref(), Some("o3"));
+        // Page text has no ref the executor resolves.
+        assert_eq!(ref_span("- text \"42\" [ref=t3]"), None);
+        assert_eq!(ref_span("- button \"x\" [ref=e]"), None);
+    }
+
+    #[test]
+    fn a_step_log_names_the_backend_that_ran_it() {
+        struct Named;
+        impl Browser for Named {
+            fn run(&mut self, _: &[&str]) -> Result<String, String> {
+                Ok(String::new())
+            }
+            fn pause(&mut self, _: Duration) {}
+            fn tool(&self) -> &'static str {
+                "agent-desktop"
+            }
+        }
+        let flow: Flow = serde_json::from_str(
+            r#"{"name":"n","title":"t","description":"d","created_unix":1,"revised_unix":1,"steps":[{"action":"press","key":"cmd+k"}]}"#,
+        )
+        .unwrap();
+        let result = execute_with(&flow, &HashMap::new(), &mut Named);
+        assert!(
+            result.log.contains("agent-desktop press Meta+k"),
+            "{}",
+            result.log
+        );
+        assert!(!result.log.contains("agent-browser"), "{}", result.log);
     }
 
     #[test]

@@ -69,9 +69,14 @@ target picks the backend:
 
 | `--url` | Backend |
 | --- | --- |
-| `http://…`, `https://…` | agent-browser, as before |
+| `http://…`, `https://…`, any other scheme (`file://`, `about:blank`) | agent-browser, as before |
 | `app://<App>` (`app://Calculator`) | agent-desktop on that app |
-| a bare name (`Raycast`) | one `pixel classify` question over `browser` and the running apps; an app answer becomes `app://<App>`, a browser answer asks for a URL |
+| a running app's exact name, any case (`raycast`) | agent-desktop on that app, without a question |
+| a page without a scheme (`example.com`, `localhost:3000`) | agent-browser, as before |
+| any other name (`the Raycast settings`) | one `pixel classify` question over `browser` and the running apps (those the name mentions first); an app answer becomes `app://<App>`, a browser answer asks for a URL |
+
+Without agent-desktop (Linux, or not installed) every target goes to
+agent-browser as given, as it did before desktops.
 
 ```bash
 pixel ultraflow discover --url app://Calculator --goal "Compute 2+3 in Calculator" --save calc
@@ -97,7 +102,10 @@ snapshot says `# ocr unavailable` and the tree alone is used.
 
 `PRESS` sends a key chord (`Hyper+R`, `cmd+k`, `return`). It is offered only
 when the goal spells a chord out or a `--var` holds one, and the chord is
-chosen among those, never invented. On the desktop a chord after an OCR
+chosen among those, never invented. A combination with `+` counts anywhere in
+the goal; a bare key that is also a word (`enter`, `return`, `escape`) counts
+only quoted (`'Enter'`) or right after `press`, `hit` or `tap`, so "Enter
+London" or "a return flight" never offers `PRESS`. On the desktop a chord after an OCR
 click goes to that point through cua-driver (foreground); otherwise
 agent-desktop's headless `press`, falling back to cua-driver when
 agent-desktop finds no focused element. In the browser it is

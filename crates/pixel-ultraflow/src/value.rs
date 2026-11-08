@@ -205,32 +205,37 @@ fn chord_vars(vars: &[Var]) -> Vec<&Var> {
         .collect()
 }
 
-/// The key chords a goal itself spells out (`Hyper+R`, `cmd+k`, `return`),
-/// in order of appearance. A bare key counts only when no sentence uses it
-/// as a word: `return` and `escape` do, `delete` and `tab` do not.
+/// The key chords a goal itself spells out (`Hyper+R`, `cmd+k`, `return`):
+/// the quoted ones first, then the rest in order of appearance.
+///
+/// A combination with `+` counts wherever it stands. A bare named key
+/// (`return`, `enter`, `escape`, `tab`, ...) is also an ordinary word ("enter
+/// the city", "a return flight"), so it counts only when it is quoted
+/// (`'return'`) or comes right after a verb of pressing (`press return`,
+/// `hit Enter`): a form goal that says "enter" never offers `PRESS`.
 pub fn chord_candidates(goal: &str) -> Vec<String> {
+    /// The words that make the bare key after them a key, not a word.
+    const PRESS_VERBS: [&str; 3] = ["press", "hit", "tap"];
     let mut out: Vec<String> = Vec::new();
-    let quoted = quoted_spans(goal);
-    let unquoted = mask(goal, &quoted);
-    let tokens = quoted
-        .iter()
-        .map(|(_, content)| content.trim().to_string())
-        .chain(
-            unquoted
-                .split_whitespace()
-                .map(|token| token.trim_matches(is_edge_punctuation).to_string()),
-        );
-    for token in tokens {
-        let named = matches!(
-            token.to_lowercase().as_str(),
-            "return" | "enter" | "escape" | "esc"
-        );
-        if (token.contains('+') || named)
-            && pixel_flow::chord::parse(&token).is_some()
-            && !out.contains(&token)
-        {
-            out.push(token);
+    let mut offer = |token: &str| {
+        if pixel_flow::chord::parse(token).is_some() && !out.iter().any(|seen| seen == token) {
+            out.push(token.to_string());
         }
+    };
+    let quoted = quoted_spans(goal);
+    for (_, content) in &quoted {
+        offer(content.trim());
+    }
+    let unquoted = mask(goal, &quoted);
+    let mut after_verb = false;
+    for raw in unquoted.split_whitespace() {
+        let token = raw.trim_matches(is_edge_punctuation);
+        if token.contains('+') || after_verb {
+            offer(token);
+        }
+        // A verb ending its clause (`press.`) presses nothing after it.
+        after_verb = PRESS_VERBS.contains(&token.to_lowercase().as_str())
+            && !raw.ends_with(is_edge_punctuation);
     }
     out
 }
@@ -803,10 +808,24 @@ mod tests {
     fn a_goal_offers_the_chords_it_spells_out_and_no_words() {
         assert_eq!(chord_candidates(HOTKEY_GOAL), ["Hyper+R"]);
         assert_eq!(
-            chord_candidates("Press 'cmd+k', then return. Delete the tab."),
+            chord_candidates("Press 'cmd+k', then press return. Delete the tab."),
             ["cmd+k", "return"]
         );
         assert!(chord_candidates("Open Settings and add a hotkey").is_empty());
+        // A bare key used as a word is not a chord: form goals never offer PRESS.
+        for goal in [
+            "Enter London as the destination",
+            "Book a return flight from Zurich",
+            "Return to the home page and escape the dialog",
+            "Press. Return to the list",
+        ] {
+            assert!(chord_candidates(goal).is_empty(), "{goal}");
+            assert!(!press_available(goal, &[]), "{goal}");
+        }
+        // Quoted, or after a verb of pressing, it is a key.
+        assert_eq!(chord_candidates("Type the name, then 'Enter'"), ["Enter"]);
+        assert_eq!(chord_candidates("Hit Enter to save"), ["Enter"]);
+        assert_eq!(chord_candidates("tap escape twice"), ["escape"]);
         assert!(press_available(HOTKEY_GOAL, &[]));
         assert!(!press_available(
             "Open Settings",

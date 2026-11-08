@@ -68,8 +68,10 @@ pub struct Desktop {
     /// The centre of each `oN` text target of the latest snapshot, in the
     /// screenshot pixels `cua-driver` clicks in.
     ocr_points: HashMap<String, (f64, f64)>,
-    /// Where the last pixel click landed, while the step after it may still
-    /// need it: a chord goes where that click put the focus.
+    /// Where the last pixel click landed, until one chord uses it: a chord
+    /// goes where that click put the focus. Any other action (a ref action,
+    /// a scroll, a new app) drops it, so a later chord never lands on a
+    /// stale point.
     last_point: Option<(f64, f64)>,
     /// Whether this run has (re)opened its `cua-driver` session: an ended
     /// session refuses every call until `start_session` revives it.
@@ -199,15 +201,17 @@ impl Desktop {
             "include_accessibility_tree": false,
             "screenshot_out_file": png.display().to_string(),
         });
-        self.cua("get_window_state", shot)?;
-        let lines = (self.tools)(Tool::Ocr, &[png.display().to_string()]);
+        let lines = self.cua("get_window_state", shot).and_then(|_| {
+            (self.tools)(Tool::Ocr, &[png.display().to_string()]).map_err(|error| {
+                error["message"]
+                    .as_str()
+                    .unwrap_or("ocr failed")
+                    .to_string()
+            })
+        });
+        // Also after a failed screenshot: it may have written part of a file.
         let _ = std::fs::remove_file(&png);
-        lines.map_err(|error| {
-            error["message"]
-                .as_str()
-                .unwrap_or("ocr failed")
-                .to_string()
-        })
+        lines
     }
 
     /// A foreground pixel click on an `oN` text target of the latest snapshot.
@@ -232,7 +236,9 @@ impl Desktop {
     fn press(&mut self, key: &str) -> Result<String, String> {
         let combo = desktop_key(key);
         let keys = crate::chord::parse(&combo);
-        if let (Some(point), Some(keys)) = (self.last_point, keys.as_ref()) {
+        // One chord per click: the point is spent here, whichever way the
+        // chord is delivered.
+        if let (Some(point), Some(keys)) = (self.last_point.take(), keys.as_ref()) {
             return self.press_with_cua(keys, Some(point));
         }
         let app = self.app()?.to_string();
@@ -303,7 +309,12 @@ impl Browser for Desktop {
                 let launched = self.call(&args(&["launch", app, "--activate"]))?;
                 self.pid = launched["pid"].as_u64();
                 self.app = Some(app.to_string());
+                // Nothing read from the previous app targets this one.
                 self.snapshot_id = None;
+                self.scroll_area = None;
+                self.window_id = None;
+                self.ocr_points.clear();
+                self.last_point = None;
                 Ok(String::new())
             }
             // The "page" of a desktop flow is the app, so the executor's
@@ -332,6 +343,8 @@ impl Browser for Desktop {
                     .clone()
                     .ok_or("the app shows no scroll area to scroll")?;
                 let target = self.qualify(&area)?;
+                // The content moves under the clicked point: it is stale.
+                self.last_point = None;
                 let units = (pixels.parse::<u32>().unwrap_or(300) / 100).max(1);
                 self.call(&args(&[
                     "scroll",
@@ -355,6 +368,10 @@ impl Browser for Desktop {
 
     fn pause(&mut self, duration: Duration) {
         std::thread::sleep(duration);
+    }
+
+    fn tool(&self) -> &'static str {
+        "agent-desktop"
     }
 }
 
@@ -403,31 +420,39 @@ fn cua_driver() -> PathBuf {
 
 /// The Vision OCR helper, compiled from its bundled source with `swiftc` on
 /// first use and cached under `~/Library/Caches/pixel-flow`.
+///
+/// The cache name is a hash of the source that stays the same across Rust
+/// toolchains ([`fnv1a`], not `DefaultHasher`). Each build writes its own
+/// source and partial binary (named by process id) and renames the binary
+/// into place, so two runs building at once, even of two versions, never
+/// compile each other's source or share a half-written file.
 #[cfg_attr(test, mutants::skip)]
 fn ocr_helper() -> Result<PathBuf, String> {
-    use std::hash::{Hash, Hasher};
     const SOURCE: &str = include_str!("desktop/ocr.swift");
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    SOURCE.hash(&mut hasher);
     let dir = std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join("Library/Caches/pixel-flow"))
         .ok_or("HOME is not set")?;
-    let binary = dir.join(format!("ocr-{:016x}", hasher.finish()));
+    let stem = format!("ocr-{:016x}", fnv1a(SOURCE));
+    let binary = dir.join(&stem);
     if binary.exists() {
         return Ok(binary);
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let source = dir.join("ocr.swift");
+    let pid = std::process::id();
+    let source = dir.join(format!("{stem}-{pid}.swift"));
+    let partial = dir.join(format!("{stem}-{pid}.partial"));
     std::fs::write(&source, SOURCE).map_err(|e| format!("{}: {e}", source.display()))?;
-    let partial = binary.with_extension("partial");
     let built = Command::new("swiftc")
         .arg("-O")
         .arg(&source)
         .arg("-o")
         .arg(&partial)
-        .output()
+        .output();
+    let _ = std::fs::remove_file(&source);
+    let built = built
         .map_err(|e| format!("the OCR helper needs swiftc (Xcode command line tools): {e}"))?;
     if !built.status.success() {
+        let _ = std::fs::remove_file(&partial);
         return Err(format!(
             "swiftc could not build the OCR helper: {}",
             String::from_utf8_lossy(&built.stderr).trim()
@@ -435,6 +460,14 @@ fn ocr_helper() -> Result<PathBuf, String> {
     }
     std::fs::rename(&partial, &binary).map_err(|e| format!("{}: {e}", binary.display()))?;
     Ok(binary)
+}
+
+/// 64-bit FNV-1a: a hash whose value is fixed by its definition, so a cache
+/// keyed by it survives a toolchain upgrade.
+fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 /// Every name the accessibility tree already shows, one entry per line of a
@@ -606,8 +639,10 @@ const KNOWN_ROLES: &[&str] = &[
 /// `- role "name" [ref=eN]` (the short ref of the qualified one), with
 /// `disabled`, `checked=` and `clickable` in the attribute block and the
 /// value echoed after it. A named node without a ref is page text, printed
-/// with a `t` ref the executor never resolves, so a decision sees it and
-/// can never target it.
+/// as `- text "name" [ref=tN]` whatever its role: a `t` ref the executor
+/// never resolves, and a role no parser offers an operation for, so a
+/// decision sees it and can never target it (a ref-less `button` keeping its
+/// role would be offered a CLICK that `qualify` then refuses).
 pub fn render_snapshot(tree: &Value) -> (String, Option<String>) {
     let mut out = String::new();
     let mut scroll_area = None;
@@ -672,10 +707,7 @@ fn render_node(
         }
         None if !name.is_empty() => {
             *texts += 1;
-            out.push_str(&format!(
-                "{indent}- {} \"{name}\" [ref=t{texts}]\n",
-                browser_role(role)
-            ));
+            out.push_str(&format!("{indent}- text \"{name}\" [ref=t{texts}]\n"));
         }
         None => {}
     }
@@ -710,7 +742,8 @@ mod tests {
     fn a_real_snapshot_renders_as_agent_browser_text() {
         let (text, scroll) = render_snapshot(&calculator()["tree"]);
         let lines: Vec<&str> = text.lines().map(str::trim).collect();
-        assert_eq!(lines[0], "- window \"Calculator\" [ref=t1]");
+        // Page text whatever its role: a ref-less node is never a target.
+        assert_eq!(lines[0], "- text \"Calculator\" [ref=t1]");
         assert!(lines.contains(&"- scrollarea \"\" [ref=e2]"), "{text}");
         // The result is static text: shown as page text, never a target.
         assert!(lines.contains(&"- text \"42\" [ref=t3]"), "{text}");
@@ -870,6 +903,89 @@ mod tests {
         );
         assert_eq!(chord["delivery_mode"], "foreground");
         assert_eq!(calls.len(), 7);
+    }
+
+    #[test]
+    fn a_pixel_point_serves_one_chord_and_never_outlives_a_scroll_or_a_new_app() {
+        let snapshot = || {
+            serde_json::json!({
+                "snapshot_id": "s9", "window": {"id": "w-28371"},
+                "tree": {"role": "window", "name": "Settings", "children": [
+                    {"role": "scrollarea", "ref_id": "@s9:e1"}]},
+            })
+        };
+        let open_and_click = |d: &mut Desktop| {
+            d.run(&["open", "app://Raycast"]).unwrap();
+            let text = d.run(&["snapshot", "-i"]).unwrap();
+            let line = text
+                .lines()
+                .find(|line| line.contains("Add Hotkey (row: Type /resume)"))
+                .unwrap();
+            let reference = &line[line.rfind("ref=").unwrap() + 4..line.len() - 1];
+            d.run(&["click", &format!("@{reference}")]).unwrap();
+        };
+        // open, snapshot, start_session, screenshot, ocr, click.
+        let clicked = || {
+            vec![
+                Ok(serde_json::json!({"pid": 81444})),
+                Ok(snapshot()),
+                Ok(Value::Null),
+                Ok(serde_json::json!({})),
+                Ok(raycast_ocr()),
+                Ok(Value::Null),
+            ]
+        };
+
+        // The first chord after the click goes to its point; the second
+        // goes through agent-desktop like any chord without one.
+        let (mut d, calls) = scripted(clicked());
+        open_and_click(&mut d);
+        d.run(&["press", "Meta+k"]).unwrap();
+        d.run(&["press", "Escape"]).unwrap();
+        let calls = calls.borrow();
+        assert_eq!(calls[6][2], "hotkey");
+        assert_eq!(calls[7], args(&["press", "escape", "--app", "Raycast"]));
+
+        // A scroll moves the content under the point: the chord after it
+        // has no point.
+        let (mut d, calls) = scripted(clicked());
+        open_and_click(&mut d);
+        d.run(&["scroll", "down", "300"]).unwrap();
+        d.run(&["press", "Meta+k"]).unwrap();
+        let calls = calls.borrow();
+        assert_eq!(calls[6][0], "scroll");
+        assert_eq!(calls[7], args(&["press", "cmd+k", "--app", "Raycast"]));
+
+        // A newly opened app forgets the old app's point and window.
+        let (mut d, calls) = scripted(clicked());
+        open_and_click(&mut d);
+        d.run(&["open", "app://Calculator"]).unwrap();
+        d.run(&["press", "Meta+k"]).unwrap();
+        assert!(d.window().is_err(), "the old window is not this app's");
+        let calls = calls.borrow();
+        assert_eq!(calls[7], args(&["press", "cmd+k", "--app", "Calculator"]));
+    }
+
+    #[test]
+    fn a_ref_less_node_is_page_text_whatever_its_role() {
+        let tree = serde_json::json!({"role": "window", "children": [
+            {"role": "button", "name": "Drawn", "available_actions": ["Click"]},
+            {"role": "link", "name": "Help"},
+        ]});
+        let (text, _) = render_snapshot(&tree);
+        assert_eq!(
+            text,
+            "  - text \"Drawn\" [ref=t1]\n  - text \"Help\" [ref=t2]\n"
+        );
+    }
+
+    #[test]
+    fn the_ocr_cache_key_is_fnv1a() {
+        // The published FNV-1a 64 test vectors: the key never depends on
+        // the toolchain.
+        assert_eq!(fnv1a(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a("foobar"), 0x8594_4171_f739_67e8);
     }
 
     #[test]
