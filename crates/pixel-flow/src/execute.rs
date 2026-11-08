@@ -41,7 +41,28 @@ pub struct StepCtx<'a> {
 /// produce an error. A step `value_var` the caller did not pass falls back
 /// to the variable's declared default, then to a placeholder `{{var}}`.
 pub fn execute(flow: &Flow, vars: &HashMap<String, String>) -> ExecResult {
-    execute_with(flow, vars, &mut AgentBrowser)
+    execute_with(flow, vars, browser_for(flow_start(flow)).as_mut())
+}
+
+/// Where a flow starts: its `url`, else the url of its first `open`.
+pub fn flow_start(flow: &Flow) -> Option<&str> {
+    flow.url.as_deref().or_else(|| {
+        flow.steps
+            .iter()
+            .find(|step| step.action == "open")
+            .and_then(|step| step.url.as_deref())
+    })
+}
+
+/// The [`Browser`] a flow starting at `start` runs in: a native app through
+/// `agent-desktop` for `app://<App>`, the `agent-browser` on PATH otherwise.
+pub fn browser_for(start: Option<&str>) -> Box<dyn Browser> {
+    match start {
+        Some(start) if start.starts_with(crate::desktop::APP_SCHEME) => {
+            Box::new(crate::desktop::Desktop::new())
+        }
+        _ => Box::new(AgentBrowser),
+    }
 }
 
 /// The `agent-browser` on PATH, as a [`Browser`]. The one way to drive the
@@ -732,7 +753,11 @@ fn extract_ref_if_matches(
         .unwrap_or(rest.len());
     let ref_id = &rest[..ref_end];
 
-    let line_lower = line.to_lowercase();
+    // The ref itself is not the element's text: `'2'` must not match the
+    // `ref=e12` of a button named `5`.
+    let line_lower = line
+        .replacen(&format!("ref=e{ref_id}"), "", 1)
+        .to_lowercase();
     let matched = if !search_terms.is_empty() {
         search_terms
             .iter()
@@ -1039,6 +1064,31 @@ mod tests {
         let snapshot = "- heading \"Welcome\" [ref=e1]";
         let ref_id = find_ref_in_snapshot(snapshot, "button containing 'Submit'");
         assert_eq!(ref_id, None);
+    }
+
+    #[test]
+    fn find_ref_ignores_the_digits_of_the_ref_itself() {
+        let snapshot = "- button \"5\" [ref=e12]\n- button \"2\" [ref=e16]";
+        let ref_id = find_ref_in_snapshot(snapshot, "button containing '2'");
+        assert_eq!(ref_id.as_deref(), Some("e16"));
+    }
+
+    #[test]
+    fn an_app_start_picks_the_desktop_and_a_flow_starts_at_its_url_or_first_open() {
+        let mut flow: Flow = serde_json::from_str(
+            r#"{"name":"n","title":"t","description":"d","created_unix":1,"revised_unix":1,"steps":[{"action":"open","url":"app://Calculator"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(flow_start(&flow), Some("app://Calculator"));
+        flow.url = Some("https://e.com".into());
+        assert_eq!(flow_start(&flow), Some("https://e.com"));
+        // A desktop answers `get url` with its app, agent-browser is never asked.
+        assert_eq!(
+            browser_for(Some("app://Calculator"))
+                .run(&["get", "url"])
+                .unwrap(),
+            ""
+        );
     }
 
     #[test]

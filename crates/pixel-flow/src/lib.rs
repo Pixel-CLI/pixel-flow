@@ -10,6 +10,7 @@
 //! Storage is file-based (one JSON per flow in `~/.local/share/pixel/flows/`)
 //! — no SQLite, no daemon. Simple, inspectable, human-editable.
 
+pub mod desktop;
 pub mod execute;
 pub mod run;
 pub mod store;
@@ -17,7 +18,10 @@ pub mod types;
 
 pub mod vars;
 
-pub use execute::{Browser, ExecResult, agent_browser, evaluate_condition, execute, execute_step};
+pub use execute::{
+    Browser, ExecResult, agent_browser, browser_for, evaluate_condition, execute, execute_step,
+    flow_start,
+};
 pub use store::{delete, ensure_flow_dir, exists, flow_dir, list, load, save, slugify};
 pub use types::{Flow, FlowStep, FlowVar};
 pub use vars::substitute;

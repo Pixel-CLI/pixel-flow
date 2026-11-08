@@ -8,7 +8,7 @@ Usage: pixel ultraflow discover [OPTIONS] --url <URL> --goal <GOAL>
 
 Options:
       --url <URL>
-          The page to start from
+          Where to start: an `http(s)://` page (agent-browser), `app://<App>` for a native macOS app (agent-desktop), or a bare name such as `Raycast`, which one `pixel classify` question resolves to the browser or one of the running apps. The saved flow records the resolved start, so a replay never asks again
 
       --goal <GOAL>
           What to accomplish, in one sentence. Becomes the flow's goal: every page decision and every value question is framed by it

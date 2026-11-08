@@ -61,6 +61,32 @@ pixel flow run <name>
 A failed connect fails the run with the agent-browser error. Keep the token
 out of shell history and committed files.
 
+## Desktop apps
+
+A flow can drive a native macOS app instead of a page, through
+[agent-desktop](https://agent-browser.dev/desktop) on `PATH`. The start
+target picks the backend:
+
+| `--url` | Backend |
+| --- | --- |
+| `http://…`, `https://…` | agent-browser, as before |
+| `app://<App>` (`app://Calculator`) | agent-desktop on that app |
+| a bare name (`Raycast`) | one `pixel classify` question over `browser` and the running apps; an app answer becomes `app://<App>`, a browser answer asks for a URL |
+
+```bash
+pixel ultraflow discover --url app://Calculator --goal "Compute 2+3 in Calculator" --save calc
+pixel ultraflow replay calc      # and `pixel flow run calc --execute`
+```
+
+The saved flow records the resolved `app://…` start, so `replay` and
+`flow run` never ask again. Snapshots are `agent-desktop snapshot --app <App>
+--compact`, rendered as agent-browser snapshot text (static text such as a
+result display is page context, never a target); `click`, `fill`, `type`,
+`select`, `press` and `scroll` map to agent-desktop's headless commands.
+`eval`, `connect` and tab commands are refused. `press` goes to the app
+without focusing it, and agent-desktop refuses it when the app is not
+frontmost; that error is reported as-is.
+
 ## How `pixel <command>` finds this plugin
 
 Plugin API 1 resolves `pixel flow` to a plugin *named* `flow`, or to an
@@ -105,6 +131,8 @@ binary `ultraflow` asks for decisions, and defaults to `pixel` on `PATH`.
   question asks core once which provider answers (a two-label ping) because
   the provider sets how many options a question may offer; `--engine remote`
   and `--engine ollaya` skip that call.
+- **`ultraflow discover --url` also takes `app://<App>` and a bare app
+  name** (see [Desktop apps](#desktop-apps)); its `--help` text says so.
 - **No `flow` alias.** The built-in `pixel flow` is gone from core; the plugin
   answers to `flow` and `ultraflow` only.
 
