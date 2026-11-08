@@ -6,7 +6,7 @@ resolver = "3"
 members = ["crates/pixel-flow-plugin", "crates/pixel-flow", "crates/pixel-ultraflow"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Pixel-CLI/pixel-flow"

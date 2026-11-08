@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 name = "flow"
-version = "0.1.0"
+version = "0.2.0"
 api = 1
 description = "Save, run and replay proven agent-browser flows (flow), and the classify-driven browser loop that discovers them (ultraflow)."
 run = "bin/pixel-flow"
