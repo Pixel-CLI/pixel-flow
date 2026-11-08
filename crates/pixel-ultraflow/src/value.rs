@@ -198,6 +198,136 @@ pub fn choose(
     }))
 }
 
+/// The declared variables whose value is a key chord.
+fn chord_vars(vars: &[Var]) -> Vec<&Var> {
+    vars.iter()
+        .filter(|var| pixel_flow::chord::parse(&var.value).is_some())
+        .collect()
+}
+
+/// The key chords a goal itself spells out (`Hyper+R`, `cmd+k`, `return`),
+/// in order of appearance. A bare key counts only when no sentence uses it
+/// as a word: `return` and `escape` do, `delete` and `tab` do not.
+pub fn chord_candidates(goal: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let quoted = quoted_spans(goal);
+    let unquoted = mask(goal, &quoted);
+    let tokens = quoted
+        .iter()
+        .map(|(_, content)| content.trim().to_string())
+        .chain(
+            unquoted
+                .split_whitespace()
+                .map(|token| token.trim_matches(is_edge_punctuation).to_string()),
+        );
+    for token in tokens {
+        let named = matches!(
+            token.to_lowercase().as_str(),
+            "return" | "enter" | "escape" | "esc"
+        );
+        if (token.contains('+') || named)
+            && pixel_flow::chord::parse(&token).is_some()
+            && !out.contains(&token)
+        {
+            out.push(token);
+        }
+    }
+    out
+}
+
+/// Whether a `PRESS` can be offered at all: some chord is available to it.
+pub fn press_available(goal: &str, vars: &[Var]) -> bool {
+    !chord_vars(vars).is_empty() || !chord_candidates(goal).is_empty()
+}
+
+/// Ask which key chord a `PRESS` sends, offering the declared variables
+/// that hold a chord — or, when none does, the chords the goal spells out.
+/// Like a field value, a chord is chosen, never invented: with nothing to
+/// choose from the answer is undetermined and no key is sent.
+pub fn choose_chord(
+    decider: &mut dyn Decider,
+    goal: &str,
+    vars: &[Var],
+    budget: usize,
+) -> Result<ValueChoice, String> {
+    let room = budget.clamp(2, MAX_LABELS) - 1;
+    let declared = chord_vars(vars);
+    let mut labels = Vec::new();
+    let mut criteria = BTreeMap::new();
+    for var in &declared {
+        labels.push(var.label());
+        criteria.insert(var.label(), var.criterion());
+    }
+    let offered = if declared.is_empty() {
+        chord_candidates(goal)
+    } else {
+        Vec::new()
+    };
+    for chord in offered {
+        let label = format!("KEY {chord}");
+        criteria.insert(
+            label.clone(),
+            "a key combination written in the goal".to_string(),
+        );
+        labels.push(label);
+    }
+    labels.truncate(room);
+    if labels.is_empty() {
+        return Ok(ValueChoice::Undetermined {
+            detail: "no key combination is available — name it in the goal or declare it with \
+                     a variable"
+                .to_string(),
+        });
+    }
+    let none = NONE_LABEL.to_string();
+    criteria.insert(
+        none.clone(),
+        "none of the offered key combinations is the one to send".to_string(),
+    );
+    labels.push(none);
+    let distribution = decider.decide(&Decision {
+        text: format!("KEY COMBINATION for the focused control\nGOAL: {goal}"),
+        context: CHORD_RULES.to_string(),
+        labels: labels.clone(),
+        criteria,
+    })?;
+    let Some(index) = argmax_index(&distribution.probabilities, &labels) else {
+        return Err(format!(
+            "the decision engine gave no probability to any of the {} key combinations offered",
+            labels.len()
+        ));
+    };
+    let label = &labels[index];
+    let probability = distribution.probabilities[label];
+    let (value, source) = if let Some(name) = label.strip_prefix("VAR ") {
+        let var = declared
+            .iter()
+            .find(|var| var.name == name)
+            .ok_or_else(|| format!("the engine chose the undeclared variable {name:?}"))?;
+        (var.value.clone(), ValueSource::Var(var.name.clone()))
+    } else if let Some(chord) = label.strip_prefix("KEY ") {
+        (chord.to_string(), ValueSource::Literal)
+    } else {
+        return Ok(ValueChoice::Undetermined {
+            detail: "no offered key combination fits — declare it with a variable".to_string(),
+        });
+    };
+    Ok(ValueChoice::Value(Resolved {
+        value,
+        source,
+        label: label.clone(),
+        probability,
+        model: distribution.model,
+    }))
+}
+
+/// The framing of every key-chord question.
+const CHORD_RULES: &str =
+    "Choose the key combination to send to the focused control to advance the goal.
+Every option is a combination the goal or the caller named.
+Choose NONE when none of them is the one the goal asks for.
+Never invent a combination that is not among the options.";
+
 /// The shared framing of every value question.
 const VALUE_RULES: &str = "Choose the value one form field needs to advance the goal.
 Every option is a value that could be entered; the field and the goal are the evidence.
@@ -664,5 +794,75 @@ mod tests {
         // 200 candidates form the option set; NONE is offered beside them.
         assert_eq!(decider.labels_of(0).len(), MAX_CANDIDATES + 1);
         assert_eq!(candidates(&goal).len(), MAX_CANDIDATES);
+    }
+
+    const HOTKEY_GOAL: &str =
+        "In the Raycast Settings window set the hotkey of the 'Type /resume' command to Hyper+R";
+
+    #[test]
+    fn a_goal_offers_the_chords_it_spells_out_and_no_words() {
+        assert_eq!(chord_candidates(HOTKEY_GOAL), ["Hyper+R"]);
+        assert_eq!(
+            chord_candidates("Press 'cmd+k', then return. Delete the tab."),
+            ["cmd+k", "return"]
+        );
+        assert!(chord_candidates("Open Settings and add a hotkey").is_empty());
+        assert!(press_available(HOTKEY_GOAL, &[]));
+        assert!(!press_available(
+            "Open Settings",
+            &[Var::new("name", "Zurich")]
+        ));
+        assert!(press_available(
+            "Open Settings",
+            &[Var::new("hotkey", "cmd+shift+m")]
+        ));
+    }
+
+    #[test]
+    fn a_chord_is_chosen_from_the_goal_or_a_chord_var_never_invented() {
+        // Nothing names a chord: no question, no key.
+        let mut decider = ScriptedDecider::default();
+        let refused = choose_chord(
+            &mut decider,
+            "Open Settings",
+            &[Var::new("city", "Zurich")],
+            64,
+        );
+        assert!(
+            matches!(refused, Ok(ValueChoice::Undetermined { .. })),
+            "{refused:?}"
+        );
+        assert!(
+            decider.asked.is_empty(),
+            "nothing was offered, so nothing was asked"
+        );
+
+        // The goal's chord, as a literal.
+        let mut decider = ScriptedDecider::always("KEY Hyper+R");
+        let Ok(ValueChoice::Value(chosen)) = choose_chord(&mut decider, HOTKEY_GOAL, &[], 64)
+        else {
+            panic!("a chord")
+        };
+        assert_eq!(
+            (chosen.value.as_str(), &chosen.source),
+            ("Hyper+R", &ValueSource::Literal)
+        );
+        assert_eq!(decider.labels_of(0), ["KEY Hyper+R", "NONE"]);
+
+        // A chord var wins over the goal's literal; a non-chord var is not offered.
+        let vars = [Var::new("city", "Zurich"), Var::new("hotkey", "cmd+k")];
+        let mut decider = ScriptedDecider::always("VAR hotkey");
+        let Ok(ValueChoice::Value(chosen)) = choose_chord(&mut decider, HOTKEY_GOAL, &vars, 64)
+        else {
+            panic!("a chord")
+        };
+        assert_eq!(chosen.value, "cmd+k");
+        assert_eq!(chosen.source, ValueSource::Var("hotkey".to_string()));
+        assert_eq!(decider.labels_of(0), ["VAR hotkey", "NONE"]);
+
+        // NONE is the honest answer, not a key.
+        let mut decider = ScriptedDecider::always("NONE");
+        let none = choose_chord(&mut decider, HOTKEY_GOAL, &[], 64).unwrap();
+        assert!(matches!(none, ValueChoice::Undetermined { .. }));
     }
 }

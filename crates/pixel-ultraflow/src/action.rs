@@ -25,6 +25,8 @@ pub enum Op {
     Select,
     ScrollUp,
     ScrollDown,
+    /// Send a key chord to the focused control; a value question names it.
+    Press,
     Wait,
     Done,
     Blocked,
@@ -39,6 +41,7 @@ impl Op {
             Op::Select => "SELECT",
             Op::ScrollUp => "SCROLL_UP",
             Op::ScrollDown => "SCROLL_DOWN",
+            Op::Press => "PRESS",
             Op::Wait => "WAIT",
             Op::Done => "DONE",
             Op::Blocked => "BLOCKED",
@@ -49,7 +52,7 @@ impl Op {
     pub fn is_targetless(self) -> bool {
         matches!(
             self,
-            Op::ScrollUp | Op::ScrollDown | Op::Wait | Op::Done | Op::Blocked
+            Op::ScrollUp | Op::ScrollDown | Op::Press | Op::Wait | Op::Done | Op::Blocked
         )
     }
 }
@@ -116,7 +119,15 @@ impl ActionSpace {
     /// than dropped quietly: a run whose page overflowed its options is
     /// never passed off as one that saw everything.
     pub fn of(elements: &[Element], budget: usize) -> ActionSpace {
-        let room = budget.clamp(TARGETLESS_LABELS, MAX_LABELS) - TARGETLESS_LABELS;
+        ActionSpace::offering(elements, budget, false)
+    }
+
+    /// [`ActionSpace::of`], offering `PRESS` too when `press` is set: only
+    /// when the goal or a declared variable names a key chord, since the
+    /// chord is chosen among those and never invented.
+    pub fn offering(elements: &[Element], budget: usize, press: bool) -> ActionSpace {
+        let reserved = TARGETLESS_LABELS + usize::from(press);
+        let room = budget.clamp(reserved, MAX_LABELS) - reserved;
         let mut space = ActionSpace {
             labels: Vec::new(),
             actions: Vec::new(),
@@ -149,13 +160,12 @@ impl ActionSpace {
                 space.elements.push(Some(element.clone()));
             }
         }
-        for op in [
-            Op::ScrollUp,
-            Op::ScrollDown,
-            Op::Wait,
-            Op::Done,
-            Op::Blocked,
-        ] {
+        let press = press.then_some(Op::Press);
+        for op in [Op::ScrollUp, Op::ScrollDown]
+            .into_iter()
+            .chain(press)
+            .chain([Op::Wait, Op::Done, Op::Blocked])
+        {
             let action = Action { op, slot: None };
             space
                 .criteria
@@ -192,6 +202,11 @@ impl ActionSpace {
     }
 }
 
+/// What `PRESS` means, shared by both decision spaces.
+pub const PRESS_CRITERION: &str = "Send a key combination named in the goal to the focused \
+     control; use when a control is waiting for a key combination, e.g. a hotkey recorder that a \
+     click just armed. A value question picks the combination.";
+
 /// What a targetless operation means, and when it is the right answer.
 fn targetless_criterion(op: Op) -> &'static str {
     match op {
@@ -205,6 +220,7 @@ fn targetless_criterion(op: Op) -> &'static str {
             "Do nothing this cycle and look again; use only when the needed control is absent or \
              disabled, or submitted results are still loading."
         }
+        Op::Press => PRESS_CRITERION,
         Op::Done => "The goal is complete: every requirement is visibly satisfied on this page.",
         Op::Blocked => "No other option can make progress toward the goal.",
         Op::Click | Op::Type | Op::Select => "A targeted operation; never offered without a slot.",
@@ -388,5 +404,37 @@ mod tests {
             ]
         );
         assert_eq!(space.truncated(), [3]);
+    }
+
+    #[test]
+    fn press_is_offered_only_when_asked_for_and_never_crowds_out_the_terminals() {
+        let body = "- button \"a\" [ref=e1]\n- button \"b\" [ref=e2]";
+        let (elements, _) = parse_snapshot(body);
+        assert!(
+            !ActionSpace::of(&elements, 64)
+                .labels()
+                .contains(&"PRESS".to_string())
+        );
+        let space = ActionSpace::offering(&elements, 64, true);
+        assert_eq!(
+            space.labels(),
+            [
+                "CLICK 1",
+                "CLICK 2",
+                "SCROLL_UP",
+                "SCROLL_DOWN",
+                "PRESS",
+                "WAIT",
+                "DONE",
+                "BLOCKED"
+            ]
+        );
+        assert!(space.criteria()["PRESS"].contains("hotkey recorder"));
+        // PRESS takes its own reserved room: a budget of seven now fits one element.
+        let tight = ActionSpace::offering(&elements, 7, true);
+        assert_eq!(tight.labels().len(), 7);
+        assert_eq!(tight.truncated(), [2]);
+        assert!(Op::Press.is_targetless());
+        assert_eq!(Op::Press.word(), "PRESS");
     }
 }

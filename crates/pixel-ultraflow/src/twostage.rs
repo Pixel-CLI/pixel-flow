@@ -91,6 +91,7 @@ pub fn operation_criteria(labels: &[String]) -> BTreeMap<String, String> {
                     "The goal is complete: every requirement is visibly satisfied on this page."
                 }
                 "BLOCKED" => "No other option can make progress toward the goal.",
+                "PRESS" => crate::action::PRESS_CRITERION,
                 other => {
                     let _ = other;
                     "An operation the page offers."
@@ -175,8 +176,13 @@ pub fn choose_two_stage(
     context: String,
     elements: &[Element],
     budget: usize,
+    press: bool,
 ) -> Result<(super::discover::TwoStageChoice, usize), String> {
-    let op_labels = bound_operation_labels(operation_labels(elements), budget);
+    let mut op_labels = operation_labels(elements);
+    if press && let Some(wait) = op_labels.iter().position(|label| label == "WAIT") {
+        op_labels.insert(wait, Op::Press.word().to_string());
+    }
+    let op_labels = bound_operation_labels(op_labels, budget);
     let question = Decision {
         text: state_text.clone(),
         context: context.clone(),
@@ -195,6 +201,7 @@ pub fn choose_two_stage(
         (Op::Select, "SELECT"),
         (Op::ScrollUp, "SCROLL_UP"),
         (Op::ScrollDown, "SCROLL_DOWN"),
+        (Op::Press, "PRESS"),
         (Op::Wait, "WAIT"),
         (Op::Done, "DONE"),
         (Op::Blocked, "BLOCKED"),
@@ -370,6 +377,7 @@ mod tests {
             "GOAL: g".into(),
             &elements,
             6,
+            false,
         )
         .unwrap();
         assert_eq!(decisions, 1);
@@ -399,6 +407,7 @@ mod tests {
             "GOAL: g".into(),
             &elements,
             8,
+            false,
         )
         .unwrap();
         let labels = decider.asked(0).labels.clone();
@@ -424,6 +433,7 @@ mod tests {
             "GOAL: g".into(),
             &elements,
             6,
+            false,
         )
         .unwrap();
         let labels = decider.asked(0).labels.clone();
@@ -454,6 +464,7 @@ mod tests {
             "GOAL: g".into(),
             &elements,
             3,
+            false,
         )
         .unwrap();
         assert_eq!(decisions, 2);
@@ -478,6 +489,7 @@ mod tests {
             "GOAL: g".into(),
             &elements,
             64,
+            false,
         )
         .unwrap();
         assert_eq!(decisions, 2);
@@ -504,6 +516,7 @@ mod tests {
             "GOAL: g".into(),
             &elements,
             64,
+            false,
         )
         .unwrap();
         assert_eq!(decisions, 1);
@@ -525,6 +538,7 @@ mod tests {
             "GOAL: g".into(),
             &elements,
             64,
+            false,
         )
         .unwrap_err();
         assert!(err.contains("no probability"), "{err}");
@@ -539,6 +553,7 @@ mod tests {
             "GOAL: g".into(),
             &elements,
             64,
+            false,
         )
         .unwrap_err();
         assert!(err.contains("no probability"), "{err}");

@@ -83,9 +83,25 @@ The saved flow records the resolved `app://…` start, so `replay` and
 --compact`, rendered as agent-browser snapshot text (static text such as a
 result display is page context, never a target); `click`, `fill`, `type`,
 `select`, `press` and `scroll` map to agent-desktop's headless commands.
-`eval`, `connect` and tab commands are refused. `press` goes to the app
-without focusing it, and agent-desktop refuses it when the app is not
-frontmost; that error is reported as-is.
+`eval`, `connect` and tab commands are refused.
+
+Controls drawn outside the accessibility tree (a WebKit settings page's
+hotkey recorder) are reached through OCR: each desktop snapshot takes one
+[cua-driver](https://github.com/trycua/cua) window screenshot, reads it with
+macOS Vision (a small Swift helper, built with `swiftc` on first use and
+cached in `~/Library/Caches/pixel-flow`), and lists every line the tree does
+not already name as a clickable `text` target (`Add Hotkey (row: Type
+/resume)`: identical labels are told apart by their row). Clicking one is a
+cua-driver foreground pixel click. Without cua-driver or `swiftc` the
+snapshot says `# ocr unavailable` and the tree alone is used.
+
+`PRESS` sends a key chord (`Hyper+R`, `cmd+k`, `return`). It is offered only
+when the goal spells a chord out or a `--var` holds one, and the chord is
+chosen among those, never invented. On the desktop a chord after an OCR
+click goes to that point through cua-driver (foreground); otherwise
+agent-desktop's headless `press`, falling back to cua-driver when
+agent-desktop finds no focused element. In the browser it is
+`agent-browser press` with Playwright key names.
 
 ## How `pixel <command>` finds this plugin
 

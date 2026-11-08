@@ -10,6 +10,7 @@
 //! Storage is file-based (one JSON per flow in `~/.local/share/pixel/flows/`)
 //! — no SQLite, no daemon. Simple, inspectable, human-editable.
 
+pub mod chord;
 pub mod desktop;
 pub mod execute;
 pub mod run;

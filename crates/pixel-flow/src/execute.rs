@@ -495,7 +495,13 @@ fn exec_step(
             Ok(true)
         }
         "press" => {
-            let key = substitute(step.key.as_deref().unwrap_or("Enter"), vars);
+            // A chord from a declared variable re-reads it on every replay,
+            // like a fill's value.
+            let key = match step.value_var {
+                Some(_) => resolve_value(step, vars, &flow.vars),
+                None => substitute(step.key.as_deref().unwrap_or("Enter"), vars),
+            };
+            let key = crate::chord::for_browser(&key);
             log.push_str(&format!("{indent}agent-browser press {key}\n"));
             browser
                 .run(&["press", &key])
@@ -744,7 +750,9 @@ fn extract_ref_if_matches(
     search_terms: &[&str],
     fallback_term: &str,
 ) -> Option<String> {
-    let ref_start = line.find("ref=e")?;
+    // `eN` is an element; `oN` a desktop OCR text target (`desktop.rs`).
+    let ref_start = line.find("ref=e").or_else(|| line.find("ref=o"))?;
+    let prefix = &line[ref_start + 4..ref_start + 5];
     let after_e = &line[ref_start + 4..]; // skip "ref=", now at "eN...]"
     let digits_start = 1; // skip the "e"
     let rest = &after_e[digits_start..];
@@ -756,7 +764,7 @@ fn extract_ref_if_matches(
     // The ref itself is not the element's text: `'2'` must not match the
     // `ref=e12` of a button named `5`.
     let line_lower = line
-        .replacen(&format!("ref=e{ref_id}"), "", 1)
+        .replacen(&format!("ref={prefix}{ref_id}"), "", 1)
         .to_lowercase();
     let matched = if !search_terms.is_empty() {
         search_terms
@@ -769,7 +777,7 @@ fn extract_ref_if_matches(
     };
 
     if matched {
-        Some(format!("e{ref_id}"))
+        Some(format!("{prefix}{ref_id}"))
     } else {
         None
     }
@@ -1071,6 +1079,11 @@ mod tests {
         let snapshot = "- button \"5\" [ref=e12]\n- button \"2\" [ref=e16]";
         let ref_id = find_ref_in_snapshot(snapshot, "button containing '2'");
         assert_eq!(ref_id.as_deref(), Some("e16"));
+        // A desktop OCR target resolves to its own `oN` ref.
+        let snapshot = "- button \"Type /resume Add Hotkey for Type /resume\" [ref=e4]\n\
+                        - text \"Add Hotkey (row: Type /resume)\" [clickable, ref=o12]";
+        let hint = "text containing 'Add Hotkey (row: Type /resume)'";
+        assert_eq!(find_ref_in_snapshot(snapshot, hint).as_deref(), Some("o12"));
     }
 
     #[test]
